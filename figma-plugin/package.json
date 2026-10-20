@@ -1,0 +1,9 @@
+{
+  "name": "smartfloor-figma-plugin",
+  "private": true,
+  "scripts": { "build": "tsc" },
+  "devDependencies": {
+    "@figma/plugin-typings": "*",
+    "typescript": "^5.4.0"
+  }
+}

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SmartFloor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="top-in">
+      <div class="brand">
+        <span class="logo">S</span>
+        <div>
+          <h1>SmartFloor</h1>
+          <p>Gemini 좌석 도면 자동 생성</p>
+        </div>
+      </div>
+      <span id="msg" class="chip">API 키와 조건을 입력하고 도면을 생성하세요</span>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <form id="form" class="card panel">
+      <h2>도면 조건</h2>
+
+      <label><span>Gemini API 키 · <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">발급받기 ↗</a></span>
+        <input id="key" type="password" autocomplete="off" placeholder="AIza...">
+      </label>
+      <label>모델<input id="model" list="models" value="gemini-2.5-flash"></label>
+      <datalist id="models"><option value="gemini-2.5-flash"><option value="gemini-2.5-pro"></datalist>
+
+      <label id="drop" class="drop" for="file">
+        <img id="preview" alt="" hidden>
+        <span id="drop-text"><strong>참고 도면 이미지 (선택)</strong><br>끌어다 놓거나 클릭 · PNG/JPG 10MB 이하</span>
+      </label>
+      <input type="file" id="file" accept=".png,.jpg,.jpeg,.webp" hidden>
+      <button type="button" class="link" id="clear-img" hidden>이미지 제거</button>
+
+      <div class="row">
+        <label>가로 (m)<input name="width" type="number" min="2" max="100" step="0.1" placeholder="12"></label>
+        <label>세로 (m)<input name="height" type="number" min="2" max="100" step="0.1" placeholder="8"></label>
+      </div>
+      <div class="row">
+        <label>1인석 수<input name="single" type="number" min="0" max="300" placeholder="30"></label>
+        <label>다인석 테이블 수<input name="multi" type="number" min="0" max="50" placeholder="4"></label>
+      </div>
+      <label>추가 요청
+        <textarea name="note" rows="3" placeholder="예) 입구는 아래쪽 가운데, 오른쪽 위에 화장실, 입구 옆에 카운터"></textarea>
+      </label>
+
+      <button class="primary big" id="gen">Gemini로 도면 생성</button>
+    </form>
+
+    <section class="main">
+      <div class="stats">
+        <div class="stat"><span>총 좌석</span><b id="st-total">0</b></div>
+        <div class="stat"><span>이용가능</span><b id="st-AVAILABLE" class="c-AVAILABLE">0</b></div>
+        <div class="stat"><span>이용중</span><b id="st-IN_USE" class="c-IN_USE">0</b></div>
+        <div class="stat"><span>마감예정</span><b id="st-CLOSING" class="c-CLOSING">0</b></div>
+        <div class="stat"><span>이용불가</span><b id="st-UNAVAILABLE" class="c-UNAVAILABLE">0</b></div>
+        <div class="stat"><span>사용률</span><b id="st-rate">0%</b></div>
+      </div>
+
+      <div class="card">
+        <div class="toolbar">
+          <div class="seg" role="group" aria-label="도구">
+            <button data-mode="move" class="on">이동</button>
+            <button data-mode="wall">벽 그리기</button>
+            <button data-mode="erase">지우개</button>
+            <button data-mode="status">상태 변경</button>
+          </div>
+          <div class="grp">
+            <button class="ghost" data-add="SINGLE">+ 1인석</button>
+            <button class="ghost" data-add="MULTI">+ 다인석</button>
+          </div>
+          <div class="grp right">
+            <button class="ghost" id="png">PNG</button>
+            <button class="ghost" id="export">JSON</button>
+            <button class="primary" id="save">저장</button>
+          </div>
+        </div>
+        <div class="stage" id="stage">
+          <div id="empty" class="empty">
+            <b>아직 도면이 없습니다</b>
+            왼쪽에 매장 조건을 입력하거나 참고 도면을 올린 뒤<br><b>Gemini로 도면 생성</b>을 누르세요.
+          </div>
+          <div id="loading" class="empty" hidden><span class="spin"></span>Gemini가 도면을 그리는 중…</div>
+          <canvas id="c" hidden></canvas>
+        </div>
+        <div class="legend">
+          <span><i class="dot wall"></i>벽</span>
+          <span><i class="dot c-AVAILABLE"></i>이용가능</span>
+          <span><i class="dot c-IN_USE"></i>이용중</span>
+          <span><i class="dot c-CLOSING"></i>마감예정</span>
+          <span><i class="dot c-UNAVAILABLE"></i>이용불가</span>
+          <span class="hint" id="hint"></span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="gemini.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

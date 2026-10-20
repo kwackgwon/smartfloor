@@ -1,0 +1,39 @@
+# GG_PBL_Project — SmartFloor
+
+매장 조건(크기·좌석 수·요청 사항)이나 참고 도면 이미지를 입력하면 **Gemini API 가 좌석 도면을 설계**하고, 웹에서 Canvas 로 그려 편집·좌석 상태 관리·내보내기(PNG/JSON/Figma)까지 하는 서비스. 벽 색상은 `#D9D9D9`.
+
+## 동작 방식
+
+**설치·서버 없음.** `index.html` 을 더블클릭해 브라우저로 열면 바로 동작한다 (인터넷 필요).
+
+1. 브라우저(`gemini.js`)가 Gemini `generateContent` 를 직접 호출 — 조건 + 참고 도면 이미지, **JSON 스키마 강제(responseSchema)**
+2. Gemini 가 `{width, height, walls, seats, labels}` (단위 cm) 를 돌려줌 → 형식·범위 정리
+3. `app.js` 가 Canvas 에 그림 (벽 `#D9D9D9`, 두께 15cm)
+
+Gemini 가 이미지 대신 좌표를 돌려주게 해서 벽 색을 정확히 `#D9D9D9` 로 맞추고, 만든 도면을 바로 편집할 수 있게 했다.
+
+## 구조
+
+| 파일 | 역할 |
+| --- | --- |
+| `index.html`, `style.css` | 화면 (API 키·조건 입력 패널, 좌석현황 카드, 툴바, Canvas, 범례) |
+| `gemini.js` | Gemini 호출 — 프롬프트, 응답 스키마, 응답 검증 |
+| `app.js` | Canvas 렌더링, 좌석 이동·회전, 벽 그리기·지우개, 상태 변경, 저장(localStorage), PNG/JSON 내보내기 |
+| `figma-plugin/` | JSON → Frame + 벽 Vector(#D9D9D9) + 좌석(상태 색) + 라벨 |
+
+## 실행
+
+1. https://aistudio.google.com/apikey 에서 Gemini API 키 발급
+2. `index.html` 더블클릭 (Chrome/Edge 권장)
+3. **Gemini API 키** 칸에 키 붙여넣기 (이 브라우저에 저장되어 다음부터는 자동 입력). 모델은 기본 `gemini-2.5-flash`
+4. 왼쪽에 조건 입력 (전부 선택 사항, 하나 이상) → **Gemini로 도면 생성**
+5. 편집: **이동**(더블클릭 = 회전) · **벽 그리기**(수평/수직 자동 정렬, 10cm 격자) · **지우개** · **상태 변경**(클릭 시 이용가능→이용중→마감예정→이용불가) · **+ 1인석/다인석** → **저장**
+6. **PNG** 로 도면 이미지 저장, **JSON** 으로 Figma 플러그인용 데이터 저장
+7. (선택, Node 필요) Figma: `cd figma-plugin && npm i && npm run build` → Figma 데스크톱 *Plugins › Development › Import plugin from manifest* → 플러그인 창에 `smartfloor.json` 내용 붙여넣기
+
+## 알려진 한계
+
+- Gemini 결과는 매번 다르고, 가끔 좌석이 벽과 겹치거나 개수가 요청과 다를 수 있다 → 다시 생성하거나 직접 보정.
+- API 키는 브라우저 `localStorage` 에 저장되고 Google 에만 전송된다. 키가 들어간 채로 웹에 공개 배포하지 말 것 (공용 PC 에서는 사용 후 키 칸을 비우기).
+- 저장소는 브라우저 `localStorage` 라 다른 브라우저/기기와 공유되지 않는다. DB·인증 없음.
+- 실행 취소(Undo) 없음.
