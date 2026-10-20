@@ -1,6 +1,21 @@
 // 브라우저에서 Gemini API 를 직접 호출해 좌석 도면 JSON 을 받아온다 (서버 없음).
 // 결과: { width, height, wallThickness, walls: [[x1,y1,x2,y2]], seats: [{type,x,y,w,h,status}], labels: [{text,x,y}] } (단위 cm)
 
+const DEFAULT_MODEL = 'gemini-3.8-flash';
+const API = 'https://generativelanguage.googleapis.com/v1beta/';
+
+// 이 키로 쓸 수 있는 텍스트 생성 모델 (정식 gemini-X.Y-flash/pro 만, 최신 버전·flash 우선)
+async function listModels(key) {
+  const res = await fetch(API + 'models?pageSize=1000', { headers: { 'x-goog-api-key': key } });
+  if (!res.ok) throw new Error('모델 목록을 가져오지 못했습니다');
+  const ver = n => parseFloat(n.match(/gemini-([\d.]+)/)[1]);
+  return ((await res.json()).models || [])
+    .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+    .map(m => m.name.replace(/^models\//, ''))
+    .filter(n => /^gemini-[\d.]+-(flash|pro)$/.test(n))
+    .sort((a, b) => ver(b) - ver(a) || b.endsWith('flash') - a.endsWith('flash'));
+}
+
 // Gemini 에게 강제할 응답 형식 (좌표 단위 cm, 원점 좌상단)
 const SCHEMA = {
   type: 'OBJECT',
@@ -88,7 +103,7 @@ async function generatePlan(o, image, key, model) {
   }
   let res;
   try {
-    res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+    res = await fetch(`${API}models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify({
@@ -103,7 +118,10 @@ async function generatePlan(o, image, key, model) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const m = data.error?.message || res.status;
-    throw new Error(/API key not valid/i.test(m) ? 'API 키가 올바르지 않습니다' : 'Gemini 오류: ' + m);
+    const err = new Error(/API key not valid/i.test(m) ? 'API 키가 올바르지 않습니다' : 'Gemini 오류: ' + m);
+    // 단종·미지원 모델이면 Google 이 안내하는 대체 모델을 함께 넘긴다 (app.js 가 한 번 재시도)
+    if (/no longer available|not found|not supported/i.test(m)) err.suggest = (String(m).match(/models\/(gemini-[\w.-]+)/g) || []).map(x => x.slice(7).replace(/\.+$/, '')).find(x => x !== model) || DEFAULT_MODEL;
+    throw err;
   }
   const text = (data.candidates?.[0]?.content?.parts || []).filter(x => !x.thought).map(x => x.text || '').join('');
   try { return cleanPlan(JSON.parse(text)); }

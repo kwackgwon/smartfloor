@@ -88,7 +88,7 @@ function save() {
 // ── Gemini 생성 ──────────────────────────────────────────
 form.onsubmit = async e => {
   e.preventDefault();
-  const f = Object.fromEntries(new FormData(form)), key = $('key').value.trim(), model = $('model').value.trim() || 'gemini-2.5-flash';
+  const f = Object.fromEntries(new FormData(form)), key = $('key').value.trim(), model = $('model').value.trim() || DEFAULT_MODEL;
   if (!key) { say('Gemini API 키를 입력하세요', 'chip err'); $('key').focus(); return; }
   if (!image && !f.width && !f.single && !f.multi && !f.note.trim()) {
     say('매장 크기·좌석 수·요청 사항 중 하나 이상을 입력하거나 도면 이미지를 올려 주세요', 'chip err'); return;
@@ -98,7 +98,14 @@ form.onsubmit = async e => {
   $('empty').hidden = true; cvs.hidden = true; $('loading').hidden = false;
   say('Gemini가 도면을 그리는 중…', 'chip');
   try {
-    const d = await generatePlan(f, image, key, model);
+    let d;
+    try { d = await generatePlan(f, image, key, model); }
+    catch (err) { // 단종된 모델이면 안내된 모델로 바꿔 한 번 더 시도
+      if (!err.suggest) throw err;
+      $('model').value = err.suggest; saveSettings();
+      say(`${model} 을(를) 쓸 수 없어 ${err.suggest} 로 다시 그리는 중…`, 'chip');
+      d = await generatePlan(f, image, key, err.suggest);
+    }
     show(d); save();
     say(`도면 생성 완료 · 벽 ${d.walls.length}개 · 좌석 ${d.seats.length}석`);
   } catch (err) {
@@ -201,9 +208,23 @@ let rz; addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(lay
 
 // API 키·모델은 이 브라우저에만 저장 (다른 곳으로 전송되지 않음, Gemini 호출에만 사용)
 try { $('key').value = localStorage.getItem(KEY + '-key') || ''; $('model').value = localStorage.getItem(KEY + '-model') || $('model').value; } catch (e) { /* 저장소 사용 불가 */ }
-$('key').onchange = $('model').onchange = () => {
+function saveSettings() {
   try { localStorage.setItem(KEY + '-key', $('key').value.trim()); localStorage.setItem(KEY + '-model', $('model').value.trim()); } catch (e) { /* 저장소 사용 불가 */ }
-};
+}
+async function refreshModels() { // 키로 쓸 수 있는 모델 목록을 받아 자동 완성에 채운다
+  const key = $('key').value.trim();
+  if (!key) return;
+  try {
+    const names = await listModels(key);
+    $('models').innerHTML = names.map(n => `<option value="${n}">`).join('');
+    const best = names.find(n => n.endsWith('-flash')) || names[0], ver = n => parseFloat((n.match(/gemini-([\d.]+)/) || [0, 0])[1]);
+    const cur = $('model').value.trim(); // 목록에 없거나 최신보다 구버전이면 최신 flash 로 교체
+    if (best && (!names.includes(cur) || ver(cur) < ver(best))) { $('model').value = best; saveSettings(); }
+  } catch (e) { /* 키 오류 등은 생성할 때 안내 */ }
+}
+$('model').onchange = saveSettings;
+$('key').onchange = () => { saveSettings(); refreshModels(); };
+refreshModels();
 
 try { // 새로고침 시 저장된 도면 복원
   const d = JSON.parse(localStorage.getItem(KEY));
