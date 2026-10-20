@@ -118,7 +118,12 @@ async function generatePlan(o, image, key, model) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const m = data.error?.message || res.status;
-    const err = new Error(/API key not valid/i.test(m) ? 'API 키가 올바르지 않습니다' : 'Gemini 오류: ' + m);
+    const busy = res.status === 503 || res.status === 500 || /high demand|overloaded|unavailable/i.test(m), quota = res.status === 429;
+    const err = new Error(/API key not valid/i.test(m) ? 'API 키가 올바르지 않습니다'
+      : busy ? 'Gemini 사용량이 많아 지금은 생성할 수 없습니다. 1~2분 뒤 다시 시도해 주세요'
+      : quota ? 'Gemini 사용 한도를 넘었습니다. 잠시 후 다시 시도하거나 다른 모델을 선택해 주세요'
+      : 'Gemini 오류: ' + m);
+    err.busy = busy || quota; // 일시적인 오류: app.js 가 기다렸다 재시도하거나 다른 모델로 시도
     // 단종·미지원 모델이면 Google 이 안내하는 대체 모델을 함께 넘긴다 (app.js 가 한 번 재시도)
     if (/no longer available|not found|not supported/i.test(m)) err.suggest = (String(m).match(/models\/(gemini-[\w.-]+)/g) || []).map(x => x.slice(7).replace(/\.+$/, '')).find(x => x !== model) || DEFAULT_MODEL;
     throw err;

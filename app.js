@@ -98,14 +98,24 @@ form.onsubmit = async e => {
   $('empty').hidden = true; cvs.hidden = true; $('loading').hidden = false;
   say('Gemini가 도면을 그리는 중…', 'chip');
   try {
-    let d;
-    try { d = await generatePlan(f, image, key, model); }
-    catch (err) { // 단종된 모델이면 안내된 모델로 바꿔 한 번 더 시도
-      if (!err.suggest) throw err;
-      $('model').value = err.suggest; saveSettings();
-      say(`${model} 을(를) 쓸 수 없어 ${err.suggest} 로 다시 그리는 중…`, 'chip');
-      d = await generatePlan(f, image, key, err.suggest);
+    // 일시 오류(사용량 폭주 등)면 기다렸다 재시도 → 그래도 안 되면 다른 flash 모델로, 단종 모델이면 안내된 모델로 시도
+    const others = [...$('models').options].map(o => o.value).filter(n => n !== model && n.endsWith('-flash')).slice(0, 2);
+    const tries = [model, model, ...(others.length ? others : [model])];
+    let d, last;
+    for (let i = 0; i < tries.length && !d; i++) {
+      try { d = await generatePlan(f, image, key, tries[i]); }
+      catch (err) {
+        last = err;
+        if (err.suggest && !tries.includes(err.suggest)) tries.splice(i + 1, 0, err.suggest);
+        else if (!err.busy) throw err;
+        const next = tries[i + 1];
+        if (!next) break;
+        say(next === tries[i] ? `Gemini 사용량이 많아 잠시 후 다시 시도하는 중… (${i + 2}/${tries.length})` : `${next} 모델로 다시 시도하는 중… (${i + 2}/${tries.length})`, 'chip');
+        if (!err.suggest) await new Promise(r => setTimeout(r, 3000 * (i + 1)));
+      }
+      if (d && tries[i] !== model) { $('model').value = tries[i]; saveSettings(); }
     }
+    if (!d) throw last;
     show(d); save();
     say(`도면 생성 완료 · 벽 ${d.walls.length}개 · 좌석 ${d.seats.length}석`);
   } catch (err) {
