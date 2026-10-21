@@ -2,6 +2,7 @@
 // 결과: { width, height, wallThickness, walls: [[x1,y1,x2,y2]], seats: [{type,x,y,w,h,status}], labels: [{text,x,y}] } (단위 cm)
 
 const DEFAULT_MODEL = 'gemini-3.8-flash';
+const ATTEMPT_MS = 60000; // 한 번 요청의 최대 대기 시간 (넘으면 재시도)
 const API = 'https://generativelanguage.googleapis.com/v1beta/';
 
 // 이 키로 쓸 수 있는 텍스트 생성 모델 (정식 gemini-X.Y-flash/pro 만, 최신 버전·flash 우선)
@@ -110,10 +111,11 @@ async function generatePlan(o, image, key, model) {
         contents: [{ role: 'user', parts }],
         generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA, temperature: 0.4 }
       }),
-      signal: AbortSignal.timeout(180000)
+      signal: AbortSignal.timeout(ATTEMPT_MS)
     });
   } catch (e) {
-    throw new Error(e.name === 'TimeoutError' ? 'Gemini 응답 시간이 초과되었습니다' : 'Gemini 에 연결할 수 없습니다 (인터넷 연결 확인)');
+    if (e.name === 'TimeoutError') throw Object.assign(new Error('Gemini 응답이 늦어 시간 초과되었습니다'), { busy: true }); // 재시도 대상
+    throw new Error('Gemini 에 연결할 수 없습니다 (인터넷 연결 확인)');
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {

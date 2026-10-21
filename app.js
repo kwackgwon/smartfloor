@@ -96,11 +96,15 @@ form.onsubmit = async e => {
   if (plan && !confirm('현재 도면과 편집 내용이 새 도면으로 바뀝니다. 계속할까요?')) return;
   const btn = $('gen'); btn.disabled = true;
   $('empty').hidden = true; cvs.hidden = true; $('loading').hidden = false;
-  say('Gemini가 도면을 그리는 중…', 'chip');
+  const t0 = Date.now(), tick = setInterval(() => { // 경과 시간 표시 (멈춘 것처럼 보이지 않게)
+    const sec = Math.round((Date.now() - t0) / 1000);
+    say(`Gemini가 도면을 그리는 중… ${sec}초`, 'chip');
+  }, 1000);
+  say('Gemini가 도면을 그리는 중… 0초', 'chip');
   try {
     // 일시 오류(사용량 폭주 등)면 기다렸다 재시도 → 그래도 안 되면 다른 flash 모델로, 단종 모델이면 안내된 모델로 시도
-    const others = [...$('models').options].map(o => o.value).filter(n => n !== model && n.endsWith('-flash')).slice(0, 2);
-    const tries = [model, model, ...(others.length ? others : [model])];
+    const other = [...$('models').options].map(o => o.value).find(n => n !== model && n.endsWith('-flash'));
+    const tries = [model, ...(other ? [other] : []), model].slice(0, 3); // 최대 3번 시도
     let d, last;
     for (let i = 0; i < tries.length && !d; i++) {
       try { d = await generatePlan(f, image, key, tries[i]); }
@@ -122,7 +126,7 @@ form.onsubmit = async e => {
     $('loading').hidden = true;
     if (plan) cvs.hidden = false; else $('empty').hidden = false;
     say(err.message, 'chip err');
-  } finally { btn.disabled = false; }
+  } finally { clearInterval(tick); btn.disabled = false; }
 };
 
 // ── 참고 도면 이미지 ─────────────────────────────────────
