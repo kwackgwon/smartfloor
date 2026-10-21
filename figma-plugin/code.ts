@@ -1,11 +1,10 @@
-// 웹에서 내보낸 smartfloor.json -> Frame 1개 + 벽(#D9D9D9) Vector Network + 좌석 사각형 + 라벨
+// 웹에서 내보낸 smartfloor.json -> Frame 1개 + 벽(#D9D9D9) Vector Network + 좌석 사각형
 figma.showUI(__html__, { width: 360, height: 320 });
 
 type Plan = {
   width: number; height: number; wallThickness: number;
   walls: number[][];
   seats: { no?: string; type: string; x: number; y: number; w: number; h: number; status: string }[];
-  labels: { text: string; x: number; y: number }[];
 };
 
 const hex = (h: string) => ({
@@ -49,19 +48,6 @@ figma.ui.onmessage = async (d: Plan) => {
     r.fills = [{ type: 'SOLID', color: hex(COLOR[t.status] || COLOR.AVAILABLE) }];
     frame.appendChild(r);
   });
-
-  if (d.labels && d.labels.length) {
-    await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
-    for (const l of d.labels) {
-      const tx = figma.createText();
-      tx.characters = l.text;
-      tx.fontSize = 24;
-      tx.fills = [{ type: 'SOLID', color: hex('#94a3b8') }];
-      frame.appendChild(tx);
-      tx.x = l.x - tx.width / 2;
-      tx.y = l.y - tx.height / 2;
-    }
-  }
 
   figma.viewport.scrollAndZoomIntoView([frame]);
   figma.closePlugin('가져오기 완료');

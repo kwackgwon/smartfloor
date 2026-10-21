@@ -1,5 +1,5 @@
 // 모든 좌표는 cm (Gemini 가 준 도면 좌표). 그릴 때만 화면 배율 s 를 곱한다.
-// plan = { width, height, wallThickness, walls: [[x1,y1,x2,y2]], seats: [{type,x,y,w,h,status}], labels: [{text,x,y}] }
+// plan = { width, height, wallThickness, walls: [[x1,y1,x2,y2]], seats: [{no,type,x,y,w,h,status}] }
 // 저장: localStorage 'smartfloor' = plan, 'smartfloor-key' / 'smartfloor-model' = Gemini 설정
 const KEY = 'smartfloor', WALL = '#D9D9D9', GRID = 10, PAD = 30; // PAD: 외벽이 잘리지 않게 도면 둘레 여백 (cm)
 const STATUS = ['AVAILABLE', 'IN_USE', 'CLOSING', 'UNAVAILABLE'];
@@ -61,8 +61,6 @@ function draw(scale = s * (devicePixelRatio || 1), ratio = devicePixelRatio || 1
   });
 
   g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillStyle = '#94a3b8'; g.font = `600 ${px(13)}px sans-serif`;
-  plan.labels.forEach(l => g.fillText(l.text, l.x, l.y));
 
   plan.seats.forEach((t, i) => {
     g.fillStyle = COLOR[t.status] || COLOR.AVAILABLE;
