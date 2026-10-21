@@ -1,7 +1,7 @@
 // 모든 좌표는 cm (Gemini 가 준 도면 좌표). 그릴 때만 화면 배율 s 를 곱한다.
-// plan = { width, height, wallThickness, walls: [[x1,y1,x2,y2]], seats: [{no,type,x,y,w,h,status}] }
+// plan = { width, height, wallThickness, walls: [[x1,y1,x2,y2,두께?]], shapes: [[고리...]], seats: [{no,type,x,y,w,h,status}] } (gemini.js 참고)
 // 저장: localStorage 'smartfloor' = plan, 'smartfloor-key' / 'smartfloor-model' = Gemini 설정
-const KEY = 'smartfloor', WALL = '#D9D9D9', GRID = 10, PAD = 30; // PAD: 외벽이 잘리지 않게 도면 둘레 여백 (cm)
+const KEY = 'smartfloor', WALL = '#D9D9D9', EDGE = '#BDBDBD', GRID = 10, PAD = 30; // PAD: 외벽이 잘리지 않게 도면 둘레 여백 (cm)
 const STATUS = ['AVAILABLE', 'IN_USE', 'CLOSING', 'UNAVAILABLE'];
 const COLOR = { AVAILABLE: '#10b981', IN_USE: '#3b82f6', CLOSING: '#f59e0b', UNAVAILABLE: '#94a3b8' };
 const SIZE = { SINGLE: [80, 60], MULTI: [180, 90] };
@@ -27,6 +27,15 @@ const distSeg = (p, [x1, y1, x2, y2]) => {
   const k = l ? Math.max(0, Math.min(1, ((p.x - x1) * dx + (p.y - y1) * dy) / l)) : 0;
   return Math.hypot(p.x - (x1 + k * dx), p.y - (y1 + k * dy));
 };
+
+// 점이 칠해진 벽 모양 안에 있는지 (구멍 포함, evenodd)
+const inShape = (p, sh) => sh.reduce((inside, l) => {
+  for (let i = 0, j = l.length - 1; i < l.length; j = i++) {
+    const [xi, yi] = l[i], [xj, yj] = l[j];
+    if ((yi > p.y) !== (yj > p.y) && p.x < (xj - xi) * (p.y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}, false);
 
 function stats() {
   const seats = plan ? plan.seats : [], n = st => seats.filter(t => t.status === st).length;
@@ -55,10 +64,19 @@ function draw(scale = s * (devicePixelRatio || 1), ratio = devicePixelRatio || 1
   for (let x = 100; x < plan.width; x += 100) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, plan.height); g.stroke(); }
   for (let y = 100; y < plan.height; y += 100) { g.beginPath(); g.moveTo(0, y); g.lineTo(plan.width, y); g.stroke(); }
 
-  g.strokeStyle = WALL; g.lineWidth = plan.wallThickness; g.lineCap = 'square';
-  [...plan.walls, ...(tmp ? [tmp] : [])].forEach(([x1, y1, x2, y2]) => {
-    g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
-  });
+  // 벽: 테두리를 먼저 조금 두껍게 그리고 그 위를 #D9D9D9 로 채운다 → 겹치는 벽은 테두리 없이 하나로 이어진다
+  const lines = [...plan.walls, ...(tmp ? [tmp] : [])], shapes = plan.shapes || [], edge = px(1.5);
+  const shapePath = sh => { const P = new Path2D(); sh.forEach(l => { l.forEach(([x, y], i) => i ? P.lineTo(x, y) : P.moveTo(x, y)); P.closePath(); }); return P; };
+  const paths = shapes.map(shapePath);
+  g.lineCap = 'square'; g.lineJoin = 'miter';
+  for (const fill of [false, true]) {
+    g.strokeStyle = g.fillStyle = fill ? WALL : EDGE;
+    lines.forEach(w => {
+      g.lineWidth = (w[4] || plan.wallThickness) + (fill ? 0 : edge * 2);
+      g.beginPath(); g.moveTo(w[0], w[1]); g.lineTo(w[2], w[3]); g.stroke();
+    });
+    paths.forEach(P => { if (fill) g.fill(P, 'evenodd'); else { g.lineWidth = edge * 2; g.stroke(P); } });
+  }
 
   g.textAlign = 'center'; g.textBaseline = 'middle';
 
@@ -101,7 +119,10 @@ form.onsubmit = async e => {
     const t = `Gemini ${pre}${stage}… ${Math.round((Date.now() - t0) / 1000)}초`;
     say(t, 'chip'); $('loading-text').textContent = t;
   };
-  const onProgress = e => { stage = e.phase === 'draw' ? `좌석 그리는 중 (${e.seats}석)` : (image ? '도면 분석 중' : '도면 설계 중'); status(); };
+  const onProgress = e => {
+    stage = e.phase === 'refine' ? '벽 다듬는 중' : e.phase === 'draw' ? (image ? `벽 찾는 중 (${e.count}개)` : `좌석 그리는 중 (${e.count}석)`) : (image ? '도면 분석 중' : '도면 설계 중');
+    status();
+  };
   const tick = setInterval(status, 1000); status();
   try {
     // 일시 오류(사용량 폭주 등)면 기다렸다 재시도 → 그래도 안 되면 다른 flash 모델로, 단종 모델이면 안내된 모델로 시도
@@ -170,7 +191,10 @@ cvs.onpointerdown = e => {
   else if (mode === 'wall') { const x = snap(p.x), y = snap(p.y); tmp = [x, y, x, y]; }
   else if (mode === 'status') { if (t) t.status = STATUS[(STATUS.indexOf(t.status) + 1) % STATUS.length]; }
   else if (t) plan.seats = plan.seats.filter(x => x !== t);
-  else plan.walls = plan.walls.filter(w => distSeg(p, w) > plan.wallThickness / 2 + 6 / s);
+  else {
+    plan.walls = plan.walls.filter(w => distSeg(p, w) > (w[4] || plan.wallThickness) / 2 + 6 / s);
+    plan.shapes = (plan.shapes || []).filter(sh => !inShape(p, sh) && !sh.some(l => l.some((q, i) => distSeg(p, [...q, ...l[(i + 1) % l.length]]) <= 6 / s)));
+  }
   cvs.setPointerCapture(e.pointerId); draw();
 };
 cvs.onpointermove = e => {
