@@ -1,12 +1,11 @@
-// 브라우저에서 Gemini API 를 직접 호출해 좌석 도면을 만든다 (서버 없음).
+// 브라우저에서 Gemini API 를 직접 호출해 벽 도면을 만든다 (서버 없음).
 // 결과 plan (단위 cm): { width, height, wallThickness,
 //   walls: [[x1,y1,x2,y2,두께?]]          선으로 된 벽 (두께가 없으면 wallThickness)
-//   shapes: [[고리, 고리, ...]]             칠해진 벽 모양. 고리 = [[x,y],...], 구멍 포함 evenodd 로 채운다
-//   seats: [{no,type,x,y,w,h,status}] }
+//   shapes: [[고리, 고리, ...]] }           칠해진 벽 모양. 고리 = [[x,y],...], 구멍 포함 evenodd 로 채운다
 //
 // 참고 도면이 있으면 "옮겨 그리기": 벽 모양은 업로드한 이미지의 벽 픽셀을 그대로 다각형으로 옮기고,
 // Gemini 는 건물 영역·벽 위치(0~1000 정규화 좌표)를 알려 줘서 글자·표제란을 걸러 내고 얇은 칸막이·창문 구간을 메운다.
-// 참고 도면이 없으면 "설계": 조건에 맞춰 cm 좌표로 직접 설계한다.
+// 참고 도면이 없으면 "설계": 요청 사항에 맞춰 cm 좌표로 직접 설계한다.
 
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 const IDLE_MS = 60000;   // 스트림에서 이 시간 동안 아무 데이터도 없으면 멈춘 것으로 보고 재시도
@@ -32,33 +31,16 @@ const obj = (props, order) => ({ type: 'OBJECT', properties: props, required: or
 const DESIGN_SCHEMA = obj({
   width: { type: 'NUMBER', description: '매장 전체 가로 (cm)' },
   height: { type: 'NUMBER', description: '매장 전체 세로 (cm)' },
-  walls: { type: 'ARRAY', description: '벽 중심선 [x1,y1,x2,y2] (cm)', items: NUMS(4) },
-  seats: {
-    type: 'ARRAY',
-    items: obj({
-      n: { type: 'STRING' }, t: { type: 'STRING', enum: ['S', 'M'] },
-      b: { ...NUMS(4), description: '[중심x, 중심y, 가로, 세로] (cm)' }
-    }, ['n', 't', 'b'])
-  }
-}, ['width', 'height', 'walls', 'seats']);
+  walls: { type: 'ARRAY', description: '벽 중심선 [x1,y1,x2,y2] (cm)', items: NUMS(4) }
+}, ['width', 'height', 'walls']);
 
-const wantText = o => [
-  o.width && o.height ? `매장 크기: 가로 ${o.width}m × 세로 ${o.height}m` : '',
-  o.single ? `1인석: ${o.single}석` : '',
-  o.multi ? `다인석 테이블: ${o.multi}개` : '',
-  o.note ? `추가 요청: ${o.note}` : ''
-].filter(Boolean).join('\n');
-
-const designPrompt = o => `너는 스터디카페/독서실 좌석 배치 설계자다. 아래 조건에 맞는 좌석 도면을 설계해 JSON 으로 답하라.
+const designPrompt = o => `너는 스터디카페/독서실 평면 설계자다. 아래 요청에 맞는 벽 도면을 설계해 JSON 으로 답하라.
 
 - 단위 cm, 원점 좌상단, x 는 오른쪽, y 는 아래쪽. 모든 좌표는 0~width, 0~height 안.
-- walls: 벽 중심선 [x1,y1,x2,y2]. 외벽은 매장 테두리를 닫힌 형태로 둘러싸되 출입문 자리(폭 90~120cm)는 비운다. 화장실·카운터 등 내부 칸막이 벽도 넣는다. 이어지는 끝점은 같은 좌표로.
-- seats: n=좌석 번호("1" 부터 차례로), t=S(1인석 80×60cm)/M(다인석 180×90cm), b=[중심x, 중심y, 가로, 세로].
-- 좌석끼리·좌석과 벽이 겹치지 않게, 벽에서 20cm 이상, 주 통로 90cm 이상. 1인석은 벽을 따라 또는 열을 지어 가지런히.
-- 요청한 좌석 수를 정확히 지킨다.
+- walls: 벽 중심선 [x1,y1,x2,y2]. 외벽은 매장 테두리를 닫힌 형태로 둘러싼다. 화장실·카운터·룸 등 내부 칸막이 벽도 넣는다. 이어지는 끝점은 같은 좌표로.
 
-[요구 사항]
-${wantText(o) || '일반적인 30평 규모 스터디카페'}`;
+[요청]
+${o.note}`;
 
 // ── 생각(thinking) 설정: Gemini 3 이상은 thinkingLevel, 2.x 는 thinkingBudget ──
 const LEVEL_BUDGET = { low: 1024, medium: 4096, high: -1 };
@@ -137,7 +119,7 @@ const WALL_SCHEMA = obj({
 
 const COORD = '좌표는 이미지 전체를 기준으로 0~1000 으로 정규화한 값이다 (왼쪽 위 0,0 / 오른쪽 아래 1000,1000). y 를 먼저 쓴다.';
 
-const WALL_PROMPT = `첨부한 이미지는 스터디카페 건축 평면도다. 벽만 찾아라.
+const wallPrompt = o => `첨부한 이미지는 스터디카페 건축 평면도다. 벽만 찾아라.
 ${COORD}
 
 - extent: 건물 외벽의 바깥 테두리를 감싸는 박스. 표제란(오른쪽 제목 칸), 좌석표, 치수선, 도면 이름은 넣지 않는다.
@@ -147,7 +129,7 @@ ${COORD}
 - 외벽 윤곽을 한 바퀴 빠짐없이 따라간다. 사선 벽은 사선 그대로. 꺾이는 곳마다 선분을 나누고, 이어지는 선분의 끝점은 같은 좌표로.
 - 문은 벽으로 보고 문 자리도 벽을 이어서 그린다.
 - 벽이 아닌 것: 책상·의자·책상 칸막이, 변기·싱크대 같은 집기, 문 열림 호, 얇은 치수선, 숫자·글자, 계단, 표제란, 좌석표, 도면 테두리.
-- width_mm: 치수선에 적힌 건물 전체 가로 길이(mm, 가장 바깥 치수). 없으면 0.`;
+- width_mm: 치수선에 적힌 건물 전체 가로 길이(mm, 가장 바깥 치수). 없으면 0.${o.note ? `\n\n[요청]\n${o.note}` : ''}`;
 
 // o: 폼 값, image: dataURL 또는 null, level: low|medium|high, onProgress({ phase: 'think'|'draw'|'refine', count })
 async function generatePlan(o, image, key, model, level = 'medium', onProgress = () => {}) {
@@ -155,20 +137,20 @@ async function generatePlan(o, image, key, model, level = 'medium', onProgress =
   if (!image) {
     const p = await streamJSON({
       key, model, level, schema: DESIGN_SCHEMA, parts: [{ text: designPrompt(o) }],
-      onThink: () => onProgress({ phase: 'think' }), onText: t => onProgress({ phase: 'draw', count: count(t, /"b"\s*:/g) })
+      onThink: () => onProgress({ phase: 'think' }), onText: t => onProgress({ phase: 'draw', count: Math.max(0, count(t, /\[/g) - 1) })
     });
     return designToPlan(p);
   }
   const m = image.match(/^data:(image\/(?:png|jpeg|webp));base64,(.+)$/);
   const [w, px] = await Promise.all([
     streamJSON({
-      key, model, level, schema: WALL_SCHEMA, parts: [{ text: WALL_PROMPT }, { inline_data: { mime_type: m[1], data: m[2] } }],
+      key, model, level, schema: WALL_SCHEMA, parts: [{ text: wallPrompt(o) }, { inline_data: { mime_type: m[1], data: m[2] } }],
       onThink: () => onProgress({ phase: 'think' }), onText: t => onProgress({ phase: 'draw', count: Math.max(0, count(t, /\[/g) - 2) })
     }),
     readPixels(image).then(wallMasks) // Gemini 를 기다리는 동안 이미지 분석
   ]);
   onProgress({ phase: 'refine' });
-  return traceToPlan(w, px, o);
+  return traceToPlan(w, px);
 }
 
 // ── 이미지 픽셀 분석 ──
@@ -326,7 +308,7 @@ function snapWall([x1, y1, x2, y2], mask, W, H) {
 }
 
 // Gemini 결과 + 픽셀 → cm 도면
-function traceToPlan(w, P, o) {
+function traceToPlan(w, P) {
   const { W, H, raw, wall } = P, S = Math.max(W, H);
   const ok4 = a => Array.isArray(a) && a.length === 4 && a.every(Number.isFinite);
   const lines = (w.walls || []).filter(ok4).map(([y1, x1, y2, x2]) => [x1 / 1000 * W, y1 / 1000 * H, x2 / 1000 * W, y2 / 1000 * H]);
@@ -358,8 +340,8 @@ function traceToPlan(w, P, o) {
   for (let i = 0; i < W * H; i++) if (K[i]) { const x = i % W, y = (i - x) / W; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
   segs.forEach(({ seg, t }) => { x0 = Math.min(x0, seg[0] - t / 2, seg[2] - t / 2); x1 = Math.max(x1, seg[0] + t / 2, seg[2] + t / 2); y0 = Math.min(y0, seg[1] - t / 2, seg[3] - t / 2); y1 = Math.max(y1, seg[1] + t / 2, seg[3] + t / 2); });
   if (x1 <= x0 || y1 <= y0) throw Object.assign(new Error('도면에서 벽을 찾지 못했습니다. 다시 시도하거나 더 선명한 도면을 올려 주세요'), { busy: true });
-  // 축척: 직접 입력한 가로(m) > 도면 치수(mm) > 가로 15m 가정
-  const realW = +o.width > 0 ? +o.width * 100 : +w.width_mm > 500 ? +w.width_mm / 10 : 1500, k = realW / (x1 - x0 + 1);
+  // 축척: 도면 치수(mm), 없으면 가로 15m 가정
+  const realW = +w.width_mm > 500 ? +w.width_mm / 10 : 1500, k = realW / (x1 - x0 + 1);
   const cx = v => Math.round((v - x0) * k * 10) / 10, cy = v => Math.round((v - y0) * k * 10) / 10;
 
   // 4. 칠해진 벽 → 다각형(구멍 포함). 덩어리마다 하나의 모양으로 묶는다 (지우개로 한 번에 지울 수 있게)
@@ -374,17 +356,13 @@ function traceToPlan(w, P, o) {
   });
 
   const walls = tidyWalls(segs.map(({ seg, t }) => [cx(seg[0]), cy(seg[1]), cx(seg[2]), cy(seg[3]), Math.max(4, Math.round(t * k))]));
-  return finalize({ width: Math.round((x1 - x0 + 1) * k), height: Math.round((y1 - y0 + 1) * k), wallThickness: 15, walls, seats: [], shapes });
+  return finalize({ width: Math.round((x1 - x0 + 1) * k), height: Math.round((y1 - y0 + 1) * k), wallThickness: 15, walls, shapes });
 }
 
 // 설계 결과(cm) → 도면
 function designToPlan(p) {
   const walls = tidyWalls((p.walls || []).filter(a => Array.isArray(a) && a.length === 4).map(a => a.map(Math.round)));
-  const seats = (p.seats || []).filter(t => t && Array.isArray(t.b)).map((t, i) => ({
-    no: String(t.n || i + 1).slice(0, 6), type: t.t === 'M' ? 'MULTI' : 'SINGLE',
-    x: Math.round(t.b[0]), y: Math.round(t.b[1]), w: Math.max(20, Math.round(t.b[2]) || 80), h: Math.max(20, Math.round(t.b[3]) || 60), status: 'AVAILABLE'
-  }));
-  return finalize({ width: Math.round(p.width), height: Math.round(p.height), wallThickness: 15, walls, seats });
+  return finalize({ width: Math.round(p.width), height: Math.round(p.height), wallThickness: 15, walls });
 }
 
 // 형식·범위 정리 (Gemini 응답을 그대로 믿지 않는다)
@@ -393,9 +371,8 @@ function finalize(p) {
   const cx = v => Math.min(W, Math.max(0, v)), cy = v => Math.min(H, Math.max(0, v));
   const walls = p.walls.map(w => [cx(w[0]), cy(w[1]), cx(w[2]), cy(w[3]), ...w.slice(4, 5)])
     .filter(w => w.every(Number.isFinite) && (w[0] !== w[2] || w[1] !== w[3]));
-  const seats = p.seats.filter(t => [t.x, t.y, t.w, t.h].every(Number.isFinite)).map(t => ({ ...t, x: cx(t.x), y: cy(t.y) }));
   const shapes = (p.shapes || []).map(sh => sh.map(l => l.map(([x, y]) => [cx(x), cy(y)])));
-  return { width: W, height: H, wallThickness: p.wallThickness, walls, shapes, seats };
+  return { width: W, height: H, wallThickness: p.wallThickness, walls, shapes };
 }
 
 // 거의 수평·수직인 벽은 똑바로 펴고(4° 이내), 가까운 끝점(20cm 이내)은 하나로 붙여 벽 틈을 없앤다

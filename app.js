@@ -1,19 +1,14 @@
-// 모든 좌표는 cm (Gemini 가 준 도면 좌표). 그릴 때만 화면 배율 s 를 곱한다.
-// plan = { width, height, wallThickness, walls: [[x1,y1,x2,y2,두께?]], shapes: [[고리...]], seats: [{no,type,x,y,w,h,status}] } (gemini.js 참고)
-// 저장: localStorage 'smartfloor' = plan, 'smartfloor-key' / 'smartfloor-model' = Gemini 설정
-const KEY = 'smartfloor', WALL = '#D9D9D9', EDGE = '#BDBDBD', GRID = 10, PAD = 30; // PAD: 외벽이 잘리지 않게 도면 둘레 여백 (cm)
-const STATUS = ['AVAILABLE', 'IN_USE', 'CLOSING', 'UNAVAILABLE'];
-const COLOR = { AVAILABLE: '#10b981', IN_USE: '#3b82f6', CLOSING: '#f59e0b', UNAVAILABLE: '#94a3b8' };
-const SIZE = { SINGLE: [80, 60], MULTI: [180, 90] };
+// 모든 좌표는 cm. 그릴 때만 화면 배율 s 를 곱한다.
+// plan = { v, width, height, wallThickness, walls: [[x1,y1,x2,y2,두께?]], shapes: [[고리...]] } (gemini.js 참고)
+// 저장: localStorage 'smartfloor' = plan, 'smartfloor-key' / '-model' / '-level' = Gemini 설정
+const KEY = 'smartfloor', PLAN_V = 2, WALL = '#D9D9D9', EDGE = '#BDBDBD', GRID = 10, PAD = 30; // PAD: 외벽이 잘리지 않게 도면 둘레 여백 (cm)
 const HINT = {
-  move: '좌석을 끌어서 이동 · 더블클릭으로 회전',
   wall: '드래그해서 벽 추가 (수평/수직 자동 정렬 · Shift = 사선)',
-  erase: '좌석 또는 벽을 클릭해 삭제',
-  status: '좌석을 클릭하면 상태가 순환'
+  erase: '벽을 클릭해 삭제'
 };
 const $ = id => document.getElementById(id);
 const cvs = $('c'), g = cvs.getContext('2d'), msg = $('msg'), file = $('file'), form = $('form');
-let plan = null, image = null, mode = 'move', s = 1, drag = null, tmp = null;
+let plan = null, image = null, mode = 'wall', s = 1, tmp = null;
 
 const say = (t, cls = 'chip ok') => { msg.textContent = t; msg.title = t; msg.className = cls; };
 const snap = (v, k = GRID) => Math.round(v / k) * k;
@@ -21,7 +16,6 @@ const pos = e => {
   const r = cvs.getBoundingClientRect();
   return { x: (e.clientX - r.left) / r.width * (plan.width + 2 * PAD) - PAD, y: (e.clientY - r.top) / r.height * (plan.height + 2 * PAD) - PAD };
 };
-const hitSeat = p => [...plan.seats].reverse().find(t => Math.abs(p.x - t.x) <= t.w / 2 && Math.abs(p.y - t.y) <= t.h / 2);
 const distSeg = (p, [x1, y1, x2, y2]) => {
   const dx = x2 - x1, dy = y2 - y1, l = dx * dx + dy * dy;
   const k = l ? Math.max(0, Math.min(1, ((p.x - x1) * dx + (p.y - y1) * dy) / l)) : 0;
@@ -37,16 +31,9 @@ const inShape = (p, sh) => sh.reduce((inside, l) => {
   return inside;
 }, false);
 
-function stats() {
-  const seats = plan ? plan.seats : [], n = st => seats.filter(t => t.status === st).length;
-  $('st-total').textContent = seats.length;
-  STATUS.forEach(st => { $('st-' + st).textContent = n(st); });
-  $('st-rate').textContent = (seats.length ? Math.round((n('IN_USE') + n('CLOSING')) / seats.length * 100) : 0) + '%';
-}
-
 function layout() { // 화면 폭에 맞춰 캔버스 크기 결정 (고해상도 화면 대응)
   if (!plan) return;
-  const st = $('stage'), maxW = st.clientWidth - 28, maxH = Math.max(420, innerHeight - 260);
+  const st = $('stage'), maxW = st.clientWidth - 28, maxH = Math.max(420, innerHeight - 200);
   const W = plan.width + 2 * PAD, H = plan.height + 2 * PAD, dpr = devicePixelRatio || 1;
   s = Math.min(maxW / W, maxH / H);
   cvs.style.width = W * s + 'px'; cvs.style.height = H * s + 'px';
@@ -65,9 +52,12 @@ function draw(scale = s * (devicePixelRatio || 1), ratio = devicePixelRatio || 1
   for (let y = 100; y < plan.height; y += 100) { g.beginPath(); g.moveTo(0, y); g.lineTo(plan.width, y); g.stroke(); }
 
   // 벽: 테두리를 먼저 조금 두껍게 그리고 그 위를 #D9D9D9 로 채운다 → 겹치는 벽은 테두리 없이 하나로 이어진다
-  const lines = [...plan.walls, ...(tmp ? [tmp] : [])], shapes = plan.shapes || [], edge = px(1.5);
-  const shapePath = sh => { const P = new Path2D(); sh.forEach(l => { l.forEach(([x, y], i) => i ? P.lineTo(x, y) : P.moveTo(x, y)); P.closePath(); }); return P; };
-  const paths = shapes.map(shapePath);
+  const lines = [...plan.walls, ...(tmp ? [tmp] : [])], edge = px(1.5);
+  const paths = (plan.shapes || []).map(sh => {
+    const P = new Path2D();
+    sh.forEach(l => { l.forEach(([x, y], i) => i ? P.lineTo(x, y) : P.moveTo(x, y)); P.closePath(); });
+    return P;
+  });
   g.lineCap = 'square'; g.lineJoin = 'miter';
   for (const fill of [false, true]) {
     g.strokeStyle = g.fillStyle = fill ? WALL : EDGE;
@@ -77,27 +67,17 @@ function draw(scale = s * (devicePixelRatio || 1), ratio = devicePixelRatio || 1
     });
     paths.forEach(P => { if (fill) g.fill(P, 'evenodd'); else { g.lineWidth = edge * 2; g.stroke(P); } });
   }
-
-  g.textAlign = 'center'; g.textBaseline = 'middle';
-
-  plan.seats.forEach((t, i) => {
-    g.fillStyle = COLOR[t.status] || COLOR.AVAILABLE;
-    g.beginPath(); g.roundRect(t.x - t.w / 2, t.y - t.h / 2, t.w, t.h, Math.min(t.w, t.h) * 0.18); g.fill();
-    g.fillStyle = '#fff'; g.font = `600 ${Math.min(t.h * 0.45, px(14))}px sans-serif`;
-    g.fillText(t.no || i + 1, t.x, t.y);
-  });
-  stats();
 }
 
 function show(p) {
-  plan = p; drag = tmp = null;
+  plan = p; tmp = null;
   $('empty').hidden = $('loading').hidden = true; cvs.hidden = false;
   layout();
 }
 
 function save() {
   if (!plan) return;
-  try { localStorage.setItem(KEY, JSON.stringify(plan)); say('저장됨'); }
+  try { localStorage.setItem(KEY, JSON.stringify({ ...plan, v: PLAN_V })); say('저장됨'); }
   catch (e) { say('저장 실패 (브라우저 저장소를 사용할 수 없음)', 'chip err'); }
 }
 
@@ -106,21 +86,19 @@ form.onsubmit = async e => {
   e.preventDefault();
   const f = Object.fromEntries(new FormData(form)), key = $('key').value.trim(), model = $('model').value.trim() || DEFAULT_MODEL;
   if (!key) { say('Gemini API 키를 입력하세요', 'chip err'); $('key').focus(); return; }
-  if (!image && !f.width && !f.single && !f.multi && !f.note.trim()) {
-    say('매장 크기·좌석 수·요청 사항 중 하나 이상을 입력하거나 도면 이미지를 올려 주세요', 'chip err'); return;
-  }
+  if (!image && !f.note.trim()) { say('참고 도면 이미지를 올리거나 요청 사항을 입력해 주세요', 'chip err'); return; }
   if (plan && !confirm('현재 도면과 편집 내용이 새 도면으로 바뀝니다. 계속할까요?')) return;
   const btn = $('gen'); btn.disabled = true;
   $('empty').hidden = true; cvs.hidden = true; $('loading').hidden = false;
-  // 진행 상황 표시: 생각 중 → 좌석 n석 그리는 중 + 경과 시간 (멈춘 것처럼 보이지 않게)
-  const level = $('level').value, t0 = Date.now();
-  let stage = image ? '도면 분석 중' : '도면 설계 중', pre = '';
+  // 진행 상황 표시: 분석 중 → 벽 n개 그리는 중 → 다듬는 중 + 경과 시간 (멈춘 것처럼 보이지 않게)
+  const level = $('level').value, t0 = Date.now(), base = image ? '도면 분석 중' : '도면 설계 중';
+  let stage = base, pre = '';
   const status = () => {
     const t = `Gemini ${pre}${stage}… ${Math.round((Date.now() - t0) / 1000)}초`;
     say(t, 'chip'); $('loading-text').textContent = t;
   };
   const onProgress = e => {
-    stage = e.phase === 'refine' ? '벽 다듬는 중' : e.phase === 'draw' ? (image ? `벽 찾는 중 (${e.count}개)` : `좌석 그리는 중 (${e.count}석)`) : (image ? '도면 분석 중' : '도면 설계 중');
+    stage = e.phase === 'refine' ? '벽 다듬는 중' : e.phase === 'draw' ? `벽 그리는 중 (${e.count}개)` : base;
     status();
   };
   const tick = setInterval(status, 1000); status();
@@ -140,13 +118,13 @@ form.onsubmit = async e => {
         pre = next === tries[i] ? `재시도 ${i + 2}/${tries.length} · ` : `${next} 로 재시도 ${i + 2}/${tries.length} · `;
         stage = '대기 중'; status();
         if (!err.suggest) await new Promise(r => setTimeout(r, 3000 * (i + 1)));
-        stage = image ? '도면 분석 중' : '도면 설계 중';
+        stage = base;
       }
       if (d && tries[i] !== model) { $('model').value = tries[i]; saveSettings(); }
     }
     if (!d) throw last;
     show(d); save();
-    say(`도면 생성 완료 · 벽 ${d.walls.length}개 · 좌석 ${d.seats.length}석 · ${Math.round((Date.now() - t0) / 1000)}초`);
+    say(`도면 생성 완료 · ${Math.round((Date.now() - t0) / 1000)}초`);
   } catch (err) {
     $('loading').hidden = true;
     if (plan) cvs.hidden = false; else $('empty').hidden = false;
@@ -161,7 +139,7 @@ function setImage(f) {
     say('PNG/JPG 이미지(10MB 이하)만 가능합니다', 'chip err'); return;
   }
   const raw = new Image();
-  raw.onload = () => { // 최대 2048px JPEG 로 축소 (도면의 작은 치수·좌석 번호가 읽히는 해상도)
+  raw.onload = () => { // 최대 2048px JPEG 로 축소 (도면의 작은 치수가 읽히는 해상도)
     const k = Math.min(1, 2048 / Math.max(raw.width, raw.height)), c = document.createElement('canvas');
     c.width = Math.round(raw.width * k); c.height = Math.round(raw.height * k);
     const cg = c.getContext('2d'); cg.fillStyle = '#fff'; cg.fillRect(0, 0, c.width, c.height);
@@ -186,11 +164,8 @@ drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); setImage
 // ── 편집 ────────────────────────────────────────────────
 cvs.onpointerdown = e => {
   if (!plan) return;
-  const p = pos(e), t = hitSeat(p);
-  if (mode === 'move') drag = t ? { t, dx: t.x - p.x, dy: t.y - p.y } : null;
-  else if (mode === 'wall') { const x = snap(p.x), y = snap(p.y); tmp = [x, y, x, y]; }
-  else if (mode === 'status') { if (t) t.status = STATUS[(STATUS.indexOf(t.status) + 1) % STATUS.length]; }
-  else if (t) plan.seats = plan.seats.filter(x => x !== t);
+  const p = pos(e);
+  if (mode === 'wall') { const x = snap(p.x), y = snap(p.y); tmp = [x, y, x, y]; }
   else {
     plan.walls = plan.walls.filter(w => distSeg(p, w) > (w[4] || plan.wallThickness) / 2 + 6 / s);
     plan.shapes = (plan.shapes || []).filter(sh => !inShape(p, sh) && !sh.some(l => l.some((q, i) => distSeg(p, [...q, ...l[(i + 1) % l.length]]) <= 6 / s)));
@@ -198,39 +173,24 @@ cvs.onpointerdown = e => {
   cvs.setPointerCapture(e.pointerId); draw();
 };
 cvs.onpointermove = e => {
-  if (!plan) return;
+  if (!plan || !tmp) return;
   const p = pos(e);
-  if (mode === 'move') cvs.style.cursor = drag || hitSeat(p) ? 'grab' : 'default';
-  if (drag) { drag.t.x = snap(p.x + drag.dx, 5); drag.t.y = snap(p.y + drag.dy, 5); }
-  else if (tmp) { // 수평/수직으로 정렬 (Shift 를 누르면 사선)
-    if (e.shiftKey) { tmp[2] = snap(p.x); tmp[3] = snap(p.y); }
-    else if (Math.abs(p.x - tmp[0]) >= Math.abs(p.y - tmp[1])) { tmp[2] = snap(p.x); tmp[3] = tmp[1]; }
-    else { tmp[2] = tmp[0]; tmp[3] = snap(p.y); }
-  } else return;
+  if (e.shiftKey) { tmp[2] = snap(p.x); tmp[3] = snap(p.y); } // 수평/수직으로 정렬 (Shift 를 누르면 사선)
+  else if (Math.abs(p.x - tmp[0]) >= Math.abs(p.y - tmp[1])) { tmp[2] = snap(p.x); tmp[3] = tmp[1]; }
+  else { tmp[2] = tmp[0]; tmp[3] = snap(p.y); }
   draw();
 };
 cvs.onpointerup = () => {
   if (tmp && Math.hypot(tmp[2] - tmp[0], tmp[3] - tmp[1]) >= GRID) plan.walls.push(tmp);
-  drag = tmp = null; if (plan) draw();
-};
-cvs.ondblclick = e => { // 좌석 회전 (가로/세로 교체)
-  if (!plan || mode !== 'move') return;
-  const t = hitSeat(pos(e));
-  if (t) { [t.w, t.h] = [t.h, t.w]; draw(); }
+  tmp = null; if (plan) draw();
 };
 
-document.querySelectorAll('[data-add]').forEach(b => b.onclick = () => {
-  if (!plan) return say('먼저 도면을 생성하세요', 'chip err');
-  const [w, h] = SIZE[b.dataset.add], k = (plan.seats.length % 5) * 20;
-  const no = String(Math.max(0, ...plan.seats.map(t => parseInt(t.no, 10) || 0)) + 1); // 기존 번호 다음 번호
-  plan.seats.push({ no, type: b.dataset.add, x: snap(plan.width / 2 + k), y: snap(plan.height / 2 + k), w, h, status: 'AVAILABLE' });
-  draw();
-});
 document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => {
-  mode = b.dataset.mode; $('hint').textContent = HINT[mode]; cvs.style.cursor = mode === 'move' ? 'default' : 'crosshair';
+  mode = b.dataset.mode; $('hint').textContent = HINT[mode];
   document.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('on', x === b));
 });
-$('hint').textContent = HINT.move;
+cvs.style.cursor = 'crosshair';
+$('hint').textContent = HINT[mode];
 $('save').onclick = save;
 
 function download(href, name) {
@@ -261,7 +221,7 @@ async function refreshModels() { // 키로 쓸 수 있는 모델 목록을 받�
   try {
     const names = await listModels(key);
     $('models').innerHTML = names.map(n => `<option value="${n}">`).join('');
-    const best = names.find(n => n.endsWith('-flash')) || names[0], ver = n => parseFloat((n.match(/gemini-([\d.]+)/) || [0, 0])[1]);
+    const best = names.find(n => n.endsWith('-flash')) || names[0];
     const cur = $('model').value.trim(); // 목록에 없거나 최신보다 구버전이면 최신 flash 로 교체
     if (best && (!names.includes(cur) || ver(cur) < ver(best))) { $('model').value = best; saveSettings(); }
   } catch (e) { /* 키 오류 등은 생성할 때 안내 */ }
@@ -270,7 +230,8 @@ $('model').onchange = $('level').onchange = saveSettings;
 $('key').onchange = () => { saveSettings(); refreshModels(); };
 refreshModels();
 
-try { // 새로고침 시 저장된 도면 복원
+try { // 새로고침 시 저장된 도면 복원 (예전 형식 저장본은 버린다)
   const d = JSON.parse(localStorage.getItem(KEY));
-  if (d && d.walls) { show(d); say('저장된 도면을 불러왔습니다'); }
+  if (d && d.v === PLAN_V && d.walls) { show(d); say('저장된 도면을 불러왔습니다'); }
+  else if (d) localStorage.removeItem(KEY);
 } catch (e) { /* 저장본 없음/손상 -> 새로 시작 */ }
