@@ -40,10 +40,12 @@ function draw(scale = s * (devicePixelRatio || 1), ratio = devicePixelRatio || 1
     sh.forEach(l => { l.forEach(([x, y], i) => i ? P.lineTo(x, y) : P.moveTo(x, y)); P.closePath(); });
     return P;
   });
-  g.lineCap = 'square'; g.lineJoin = 'miter';
+  g.lineJoin = 'miter';
   for (const fill of [false, true]) {
     g.strokeStyle = g.fillStyle = fill ? WALL : EDGE;
     lines.forEach(w => {
+      // 옮겨 그린 벽(두께 있음)은 끝점이 벽 끝에 정확히 맞춰져 있어 끝을 평평하게, 직접 그린 벽은 모서리가 이어지게 사각 끝
+      g.lineCap = w[4] ? 'butt' : 'square';
       g.lineWidth = (w[4] || plan.wallThickness) + (fill ? 0 : edge * 2);
       g.beginPath(); g.moveTo(w[0], w[1]); g.lineTo(w[2], w[3]); g.stroke();
     });
@@ -73,16 +75,18 @@ form.onsubmit = async e => {
   const btn = $('gen'); btn.disabled = true;
   $('empty').hidden = true; cvs.hidden = true; $('loading').hidden = false;
   // 진행 상황 표시: 분석 중 → 벽 n개 그리는 중 → 다듬는 중 + 경과 시간 (멈춘 것처럼 보이지 않게)
+  // 이미지 픽셀만으로 만든 미리보기가 먼저 뜨고, Gemini 답이 오면 최종 도면으로 바뀐다
   const t0 = Date.now(), base = '도면 분석 중';
-  let stage = base, pre = '';
+  let stage = base, pre = '', preview = false;
   const status = () => {
-    const t = `Gemini ${pre}${stage}… ${Math.round((Date.now() - t0) / 1000)}초`;
+    const t = `${preview ? '미리보기 표시됨 · ' : ''}Gemini ${pre}${stage}… ${Math.round((Date.now() - t0) / 1000)}초`;
     say(t, 'chip'); $('loading-text').textContent = t;
   };
   const onProgress = e => {
     stage = e.phase === 'refine' ? '벽 다듬는 중' : e.phase === 'draw' ? `벽 그리는 중 (${e.count}개)` : base;
     status();
   };
+  const onPreview = p => { preview = true; show(p); status(); };
   const tick = setInterval(status, 1000); status();
   try {
     // 일시 오류(사용량 폭주 등)면 기다렸다 재시도 → 그래도 안 되면 다른 flash 모델로, 단종 모델이면 안내된 모델로 시도
@@ -90,7 +94,7 @@ form.onsubmit = async e => {
     const tries = [model, ...(other ? [other] : []), model].slice(0, 3); // 최대 3번 시도
     let d, last;
     for (let i = 0; i < tries.length && !d; i++) {
-      try { d = await generatePlan(f, image, key, tries[i], onProgress); }
+      try { d = await generatePlan(f, image, key, tries[i], onProgress, onPreview); }
       catch (err) {
         last = err;
         if (err.suggest && !tries.includes(err.suggest)) tries.splice(i + 1, 0, err.suggest);
@@ -110,7 +114,7 @@ form.onsubmit = async e => {
   } catch (err) {
     $('loading').hidden = true;
     if (plan) cvs.hidden = false; else $('empty').hidden = false;
-    say(err.message, 'chip err');
+    say(preview ? `Gemini 보정 실패 — 미리보기 도면만 표시 (${err.message})` : err.message, 'chip err');
   } finally { clearInterval(tick); btn.disabled = false; }
 };
 

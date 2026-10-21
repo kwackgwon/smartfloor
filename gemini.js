@@ -119,18 +119,22 @@ ${COORD}
 - 벽이 아닌 것: 책상·의자·책상 칸막이, 변기·싱크대 같은 집기, 문 열림 호, 얇은 치수선, 숫자·글자, 계단, 표제란, 좌석표, 도면 테두리.
 - width_mm: 치수선에 적힌 건물 전체 가로 길이(mm, 가장 바깥 치수). 없으면 0.${o.note ? `\n\n[요청] (이미지에 그려진 것 안에서만 반영한다)\n${o.note}` : ''}`;
 
-// o: 폼 값, image: dataURL, onProgress({ phase: 'think'|'draw'|'refine', count })
-// 정확도가 가장 중요해서 생각(thinking) 수준은 항상 가장 높게(high) 한다
-async function generatePlan(o, image, key, model, onProgress = () => {}) {
+// o: 폼 값, image: dataURL, onProgress({ phase: 'think'|'draw'|'refine', count }), onPreview(plan)
+// 정확도가 가장 중요해서 생각(thinking) 수준은 항상 가장 높게(high) 한다. 대신 기다리는 동안
+// 이미지 픽셀만으로 만든 미리보기를 먼저 보여 주고(1초 안팎), Gemini 답이 오면 최종 도면으로 바꾼다.
+let pxCache = null; // 같은 이미지로 재시도할 때 픽셀 분석을 다시 하지 않는다
+async function generatePlan(o, image, key, model, onProgress = () => {}, onPreview = () => {}) {
   const count = (t, re) => (t.match(re) || []).length;
   const m = image.match(/^data:(image\/(?:png|jpeg|webp));base64,(.+)$/);
-  const [w, px] = await Promise.all([
-    streamJSON({
-      key, model, level: 'high', schema: WALL_SCHEMA, parts: [{ text: wallPrompt(o) }, { inline_data: { mime_type: m[1], data: m[2] } }],
-      onThink: () => onProgress({ phase: 'think' }), onText: t => onProgress({ phase: 'draw', count: Math.max(0, count(t, /\[/g) - 2) })
-    }),
-    readPixels(image).then(wallMasks) // Gemini 를 기다리는 동안 이미지 분석
-  ]);
+  const gem = streamJSON({
+    key, model, level: 'high', schema: WALL_SCHEMA, parts: [{ text: wallPrompt(o) }, { inline_data: { mime_type: m[1], data: m[2] } }],
+    onThink: () => onProgress({ phase: 'think' }), onText: t => onProgress({ phase: 'draw', count: Math.max(0, count(t, /\[/g) - 2) })
+  });
+  gem.catch(() => {}); // 미리보기를 만드는 동안 실패해도 아래 await 에서 받는다
+  if (!pxCache || pxCache.image !== image) pxCache = { image, px: wallMasks(await readPixels(image)) };
+  const px = pxCache.px;
+  try { onPreview(traceToPlan(autoExtent(px), px)); } catch (e) { /* 미리보기를 못 만들면 Gemini 결과만 쓴다 */ }
+  const w = await gem;
   onProgress({ phase: 'refine' });
   return traceToPlan(w, px);
 }
@@ -243,6 +247,22 @@ function simplifyLoop(pts, eps) {
   return [...a.slice(0, -1), ...b.slice(0, -1)];
 }
 
+// 수평·수직에 가까운(4° 이내) 변을 똑바로 펴고, 두 변이 만나는 꼭짓점을 정확히 맞춘다. 일직선 위의 점은 뺀다
+function orthogonalize(pts) {
+  const n = pts.length, next = i => pts[(i + 1) % n];
+  const kind = pts.map((a, i) => { const b = next(i), dx = Math.abs(b[0] - a[0]), dy = Math.abs(b[1] - a[1]); return dy <= dx * 0.07 ? 'h' : dx <= dy * 0.07 ? 'v' : ''; });
+  const val = pts.map((a, i) => kind[i] === 'h' ? (a[1] + next(i)[1]) / 2 : kind[i] === 'v' ? (a[0] + next(i)[0]) / 2 : 0);
+  const out = pts.map((p, i) => { // 꼭짓점 i 는 변 i-1 과 변 i 사이
+    let [x, y] = p;
+    for (const e of [(i - 1 + n) % n, i]) { if (kind[e] === 'h') y = val[e]; else if (kind[e] === 'v') x = val[e]; }
+    return [x, y];
+  });
+  return out.filter((p, i) => {
+    const a = out[(i - 1 + n) % n], b = out[(i + 1) % n], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    return Math.hypot(p[0] - a[0], p[1] - a[1]) >= 0.5 && Math.abs((p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])) > 0.5 * L;
+  });
+}
+
 // Gemini 가 준 벽 선분을 마스크의 실제 벽 중심선에 맞춘다 (평행 이동 + 기울기 보정), 끝점은 벽이 끝나는 곳까지.
 // 반환 { seg, t: 두께(px), cov: 선분 중 벽 픽셀 위에 있는 비율 }
 function snapWall([x1, y1, x2, y2], mask, W, H) {
@@ -289,6 +309,54 @@ function snapWall([x1, y1, x2, y2], mask, W, H) {
   return { seg: [ax, ay, bx, by], t: tLen, cov: ok.length / (N + 1) };
 }
 
+// 벽 선분의 끝이 다른 벽 가까이에서 끝나면(모서리·T자), 그 벽의 바깥 면에 정확히 닿게 맞춘다
+// → 끝이 모자라 생기는 틈도, 넘쳐서 튀어나오는 부분도 없앤다. 다른 벽과 만나지 않는 끝은 그대로 둔다
+function joinEnds(segs) {
+  const fixed = segs.map(r => r.seg.slice());
+  segs.forEach((r, i) => {
+    const [x1, y1, x2, y2] = r.seg, L = Math.hypot(x2 - x1, y2 - y1);
+    if (L < 1) return;
+    const ux = (x2 - x1) / L, uy = (y2 - y1) / L;
+    [[x1, y1, -1], [x2, y2, 1]].forEach(([px, py, dir]) => {
+      let best = null;
+      segs.forEach((o, j) => {
+        if (j === i) return;
+        const [a, b, c, d] = o.seg, M = Math.hypot(c - a, d - b);
+        if (M < 1) return;
+        const vx = (c - a) / M, vy = (d - b) / M, cross = ux * vy - uy * vx;
+        if (Math.abs(cross) < 0.5) return; // 30° 보다 비슷한 방향이면 모서리가 아니다
+        const t = ((a - px) * vy - (b - py) * vx) / cross; // 이 선분 방향으로 t 만큼 가면 다른 벽 중심선
+        const q = ((px + ux * t - a) * vx + (py + uy * t - b) * vy); // 다른 벽 위의 위치 (0~M)
+        const reach = Math.max(r.t, o.t) * 1.5 + 3;
+        if (Math.abs(t) > reach || q < -o.t || q > M + o.t) return;
+        if (!best || Math.abs(t) < Math.abs(best.t)) best = { t, o, sin: Math.abs(cross) };
+      });
+      if (!best) return;
+      // 중심선 교점에서 바깥쪽으로 다른 벽 두께의 절반(사선이면 /sin)만큼 더 나가면 바깥 면 → 끝을 평평하게 그려도 모서리가 꽉 찬다
+      const go = best.t + dir * best.o.t / 2 / best.sin, nx = px + ux * go, ny = py + uy * go;
+      if (dir < 0) { fixed[i][0] = nx; fixed[i][1] = ny; } else { fixed[i][2] = nx; fixed[i][3] = ny; }
+    });
+  });
+  segs.forEach((r, i) => { r.seg = fixed[i]; });
+}
+
+// Gemini 없이 건물 영역 추정 (미리보기용): 가장 큰 벽 덩어리에서 시작해, 가까이(긴 변의 5% 이내) 있는 덩어리를 차례로 붙인다
+function autoExtent(P) {
+  const { W, H } = P, S = Math.max(W, H), minArea = (S * 0.007) ** 2, gap = S * 0.05;
+  P.comp = P.comp || components(P.wall, W, H);
+  const cs = P.comp.list.filter(c => c.area >= minArea).sort((a, b) => b.area - a.area);
+  if (!cs.length) throw new Error('벽을 찾지 못했습니다');
+  let box = [cs[0].x0, cs[0].y0, cs[0].x1, cs[0].y1], grew = true;
+  const used = new Set([cs[0]]);
+  while (grew) {
+    grew = false;
+    for (const c of cs) if (!used.has(c) && c.x0 <= box[2] + gap && c.x1 >= box[0] - gap && c.y0 <= box[3] + gap && c.y1 >= box[1] - gap) {
+      used.add(c); box = [Math.min(box[0], c.x0), Math.min(box[1], c.y0), Math.max(box[2], c.x1), Math.max(box[3], c.y1)]; grew = true;
+    }
+  }
+  return { extent: [box[1] / H * 1000, box[0] / W * 1000, box[3] / H * 1000, box[2] / W * 1000], walls: [], width_mm: 0 };
+}
+
 // Gemini 결과 + 픽셀 → cm 도면
 function traceToPlan(w, P) {
   const { W, H, raw, wall } = P, S = Math.max(W, H);
@@ -301,7 +369,8 @@ function traceToPlan(w, P) {
   const pad = S * 0.03, inEx = (x, y) => x >= ex[0] - pad && x <= ex[2] + pad && y >= ex[1] - pad && y <= ex[3] + pad;
 
   // 1. 칠해진 벽 덩어리 중 건물 영역 안에 있고 충분히 큰 것만 남긴다 (글자·기호 조각 제거)
-  const { lab, list } = components(wall, W, H), keepId = new Uint8Array(list.length + 1);
+  P.comp = P.comp || components(wall, W, H);
+  const { lab, list } = P.comp, keepId = new Uint8Array(list.length + 1);
   const minArea = (S * 0.007) ** 2, minDim = S * 0.008;
   list.forEach(c => { if (c.area >= minArea && Math.max(c.x1 - c.x0, c.y1 - c.y0) >= minDim && inEx((c.x0 + c.x1) / 2, (c.y0 + c.y1) / 2)) keepId[c.id] = 1; });
   const K = new Uint8Array(W * H);
@@ -316,6 +385,7 @@ function traceToPlan(w, P) {
     if (r.cov < 0.35) { r = snapWall(l, raw, W, H); if (r.cov < 0.5) continue; r.t = Math.max(r.t, S * 0.004); }
     segs.push(r);
   }
+  joinEnds(segs);
 
   // 3. 범위·축척: 남은 벽 픽셀과 선분이 차지하는 범위 = 건물 외곽
   let x0 = W, y0 = H, x1 = 0, y1 = 0;
@@ -332,12 +402,13 @@ function traceToPlan(w, P) {
     if (!keepId[c.id]) return;
     const bw = c.x1 - c.x0 + 1, bh = c.y1 - c.y0 + 1, sub = new Uint8Array(bw * bh);
     for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) if (lab[y * W + x] === c.id) sub[(y - c.y0) * bw + x - c.x0] = 1;
-    const loops = traceLoops(sub, bw, bh).map(l => simplifyLoop(l, 1.2)).filter(l => l.length >= 3)
+    const loops = traceLoops(sub, bw, bh).map(l => orthogonalize(simplifyLoop(l, 2))).filter(l => l.length >= 3)
       .map(l => l.map(([x, y]) => [cx(x + c.x0), cy(y + c.y0)]));
     if (loops.length) shapes.push(loops);
   });
 
-  const walls = tidyWalls(segs.map(({ seg, t }) => [cx(seg[0]), cy(seg[1]), cx(seg[2]), cy(seg[3]), Math.max(4, Math.round(t * k))]));
+  // 선 벽의 끝점은 픽셀에서 벽이 끝나는 곳에 맞췄으므로 수평·수직만 편다
+  const walls = segs.map(({ seg, t }) => straighten([cx(seg[0]), cy(seg[1]), cx(seg[2]), cy(seg[3]), Math.max(4, Math.round(t * k))]));
   return finalize({ width: Math.round((x1 - x0 + 1) * k), height: Math.round((y1 - y0 + 1) * k), wallThickness: 15, walls, shapes });
 }
 
@@ -351,27 +422,13 @@ function finalize(p) {
   return { width: W, height: H, wallThickness: p.wallThickness, walls, shapes };
 }
 
-// 거의 수평·수직인 벽은 똑바로 펴고(4° 이내), 가까운 끝점(20cm 이내)은 하나로 붙여 벽 틈을 없앤다
+// 거의 수평·수직인(4° 이내) 벽 선분을 똑바로 편다
 const straighten = ([x1, y1, x2, y2, ...t]) => { // t: 두께 (있으면 그대로 유지)
   const dx = x2 - x1, dy = y2 - y1;
   if (Math.abs(dy) <= Math.abs(dx) * 0.07) { const y = Math.round((y1 + y2) / 2); return [x1, y, x2, y, ...t]; }
   if (Math.abs(dx) <= Math.abs(dy) * 0.07) { const x = Math.round((x1 + x2) / 2); return [x, y1, x, y2, ...t]; }
   return [x1, y1, x2, y2, ...t];
 };
-function tidyWalls(walls, pass = 2) {
-  walls = walls.filter(w => w.every(Number.isFinite)).map(straighten);
-  const pts = walls.flatMap(w => [[w[0], w[1]], [w[2], w[3]]]), groups = [];
-  pts.forEach(p => {
-    const g = groups.find(g => Math.hypot(g.x - p[0], g.y - p[1]) <= 20);
-    if (g) { g.list.push(p); g.x = g.list.reduce((s, q) => s + q[0], 0) / g.list.length; g.y = g.list.reduce((s, q) => s + q[1], 0) / g.list.length; }
-    else groups.push({ x: p[0], y: p[1], list: [p] });
-  });
-  groups.forEach(g => g.list.forEach(p => { p[0] = Math.round(g.x); p[1] = Math.round(g.y); }));
-  walls = walls.map((w, i) => straighten([pts[2 * i][0], pts[2 * i][1], pts[2 * i + 1][0], pts[2 * i + 1][1], ...w.slice(4)]))
-    .filter(w => w[0] !== w[2] || w[1] !== w[3]);
-  return pass > 1 ? tidyWalls(walls, pass - 1) : walls; // 펴면서 생긴 모서리의 작은 어긋남을 한 번 더 붙인다
-}
-
 function apiError(status, m, model) {
   const busy = status === 503 || status === 500 || /high demand|overloaded|unavailable/i.test(m), quota = status === 429;
   const err = new Error(/API key not valid/i.test(m) ? 'API 키가 올바르지 않습니다'
