@@ -29,6 +29,13 @@
       </label>
       <label>모델 (키 입력 시 최신 모델 자동 선택)<input id="model" list="models" value="gemini-3.8-flash"></label>
       <datalist id="models"></datalist>
+      <label>생성 방식
+        <select id="level">
+          <option value="low">빠르게 (간단한 도면)</option>
+          <option value="medium" selected>균형 (권장)</option>
+          <option value="high">정밀하게 (복잡한 도면, 느림)</option>
+        </select>
+      </label>
 
       <label id="drop" class="drop" for="file">
         <img id="preview" alt="" hidden>
@@ -85,7 +92,7 @@
             <b>아직 도면이 없습니다</b>
             왼쪽에 매장 조건을 입력하거나 참고 도면을 올린 뒤<br><b>Gemini로 도면 생성</b>을 누르세요.
           </div>
-          <div id="loading" class="empty" hidden><span class="spin"></span>Gemini가 도면을 그리는 중…</div>
+          <div id="loading" class="empty" hidden><span class="spin"></span><span id="loading-text">Gemini가 도면을 그리는 중…</span></div>
           <canvas id="c" hidden></canvas>
         </div>
         <div class="legend">

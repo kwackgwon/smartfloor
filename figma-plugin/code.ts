@@ -4,7 +4,7 @@ figma.showUI(__html__, { width: 360, height: 320 });
 type Plan = {
   width: number; height: number; wallThickness: number;
   walls: number[][];
-  seats: { type: string; x: number; y: number; w: number; h: number; status: string }[];
+  seats: { no?: string; type: string; x: number; y: number; w: number; h: number; status: string }[];
   labels: { text: string; x: number; y: number }[];
 };
 
@@ -41,7 +41,7 @@ figma.ui.onmessage = async (d: Plan) => {
 
   d.seats.forEach((t, i) => {
     const r = figma.createRectangle();
-    r.name = `Seat ${i + 1} ${t.type}`;
+    r.name = `Seat ${t.no || i + 1} ${t.type}`;
     r.resize(t.w, t.h);
     r.x = t.x - t.w / 2;
     r.y = t.y - t.h / 2;

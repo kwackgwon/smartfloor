@@ -38,9 +38,9 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .panel { padding: 16px; display: flex; flex-direction: column; gap: 12px; position: sticky; top: 80px; }
 .panel h2 { margin: 0; font-size: 16px; }
 .panel label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
-.panel input, .panel textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); resize: vertical; }
+.panel input, .panel textarea, .panel select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); resize: vertical; }
 .panel label a { color: var(--indigo); font-size: 12px; }
-.panel input:focus, .panel textarea:focus { outline: 2px solid var(--indigo); outline-offset: -1px; }
+.panel input:focus, .panel textarea:focus, .panel select:focus { outline: 2px solid var(--indigo); outline-offset: -1px; }
 .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .drop {
   align-items: center; justify-content: center; text-align: center; min-height: 110px; padding: 12px;

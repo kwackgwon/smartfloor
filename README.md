@@ -6,7 +6,7 @@
 
 **설치·서버 없음.** `index.html` 을 더블클릭해 브라우저로 열면 바로 동작한다 (인터넷 필요).
 
-1. 브라우저(`gemini.js`)가 Gemini `generateContent` 를 직접 호출 — 조건 + 참고 도면 이미지, **JSON 스키마 강제(responseSchema)**
+1. 브라우저(`gemini.js`)가 Gemini `streamGenerateContent` 를 직접 호출 — 조건 + 참고 도면 이미지, **JSON 스키마 강제(responseSchema)**, 좌표는 짧은 숫자 배열(출력 토큰 ↓ = 속도 ↑)
 2. Gemini 가 `{width, height, walls, seats, labels}` (단위 cm) 를 돌려줌 → 형식·범위 정리
 3. `app.js` 가 Canvas 에 그림 (벽 `#D9D9D9`, 두께 15cm)
 
@@ -26,8 +26,10 @@ Gemini 가 이미지 대신 좌표를 돌려주게 해서 벽 색을 정확히 `
 1. https://aistudio.google.com/apikey 에서 Gemini API 키 발급
 2. `index.html` 더블클릭 (Chrome/Edge 권장)
 3. **Gemini API 키** 칸에 키 붙여넣기 (이 브라우저에 저장되어 다음부터는 자동 입력). 모델은 키로 쓸 수 있는 최신 Flash 가 자동 선택됨 (단종 모델이면 Google 이 안내하는 모델로 자동 재시도)
-4. 왼쪽에 조건 입력 (전부 선택 사항, 하나 이상) → **Gemini로 도면 생성**
-5. 편집: **이동**(더블클릭 = 회전) · **벽 그리기**(수평/수직 자동 정렬, 10cm 격자) · **지우개** · **상태 변경**(클릭 시 이용가능→이용중→마감예정→이용불가) · **+ 1인석/다인석** → **저장**
+4. 왼쪽에 조건 입력 (전부 선택 사항, 하나 이상) → **생성 방식** 선택 (빠르게 / 균형 / 정밀하게) → **Gemini로 도면 생성**
+   - 참고 도면을 올리면 새로 설계하지 않고 도면을 그대로 옮긴다: 치수(mm)로 실제 크기, 사선 벽, 도면의 좌석 번호, 좌석표 합계 확인
+   - 진행 상황(분석 중 → 좌석 n석 그리는 중)과 경과 시간이 표시된다
+5. 편집: **이동**(더블클릭 = 회전) · **벽 그리기**(수평/수직 자동 정렬, Shift = 사선, 10cm 격자) · **지우개** · **상태 변경**(클릭 시 이용가능→이용중→마감예정→이용불가) · **+ 1인석/다인석** → **저장**
 6. **PNG** 로 도면 이미지 저장, **JSON** 으로 Figma 플러그인용 데이터 저장
 7. (선택, Node 필요) Figma: `cd figma-plugin && npm i && npm run build` → Figma 데스크톱 *Plugins › Development › Import plugin from manifest* → 플러그인 창에 `smartfloor.json` 내용 붙여넣기
 
