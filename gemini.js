@@ -3,9 +3,8 @@
 //   walls: [[x1,y1,x2,y2,두께?]]          선으로 된 벽 (두께가 없으면 wallThickness)
 //   shapes: [[고리, 고리, ...]] }           칠해진 벽 모양. 고리 = [[x,y],...], 구멍 포함 evenodd 로 채운다
 //
-// 참고 도면이 있으면 "옮겨 그리기": 벽 모양은 업로드한 이미지의 벽 픽셀을 그대로 다각형으로 옮기고,
+// 벽 모양은 업로드한 도면 이미지의 벽 픽셀을 그대로 다각형으로 옮기고,
 // Gemini 는 건물 영역·벽 위치(0~1000 정규화 좌표)를 알려 줘서 글자·표제란을 걸러 내고 얇은 칸막이·창문 구간을 메운다.
-// 참고 도면이 없으면 "설계": 요청 사항에 맞춰 cm 좌표로 직접 설계한다.
 
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 const IDLE_MS = 60000;   // 스트림에서 이 시간 동안 아무 데이터도 없으면 멈춘 것으로 보고 재시도
@@ -28,29 +27,15 @@ async function listModels(key) {
 const NUMS = n => ({ type: 'ARRAY', items: { type: 'NUMBER' }, minItems: n, maxItems: n });
 const obj = (props, order) => ({ type: 'OBJECT', properties: props, required: order, propertyOrdering: order });
 
-const DESIGN_SCHEMA = obj({
-  width: { type: 'NUMBER', description: '매장 전체 가로 (cm)' },
-  height: { type: 'NUMBER', description: '매장 전체 세로 (cm)' },
-  walls: { type: 'ARRAY', description: '벽 중심선 [x1,y1,x2,y2] (cm)', items: NUMS(4) }
-}, ['width', 'height', 'walls']);
-
-const designPrompt = o => `너는 스터디카페/독서실 평면 설계자다. 아래 요청에 맞는 벽 도면을 설계해 JSON 으로 답하라.
-
-- 단위 cm, 원점 좌상단, x 는 오른쪽, y 는 아래쪽. 모든 좌표는 0~width, 0~height 안.
-- walls: 벽 중심선 [x1,y1,x2,y2]. 외벽은 매장 테두리를 닫힌 형태로 둘러싼다. 화장실·카운터·룸 등 내부 칸막이 벽도 넣는다. 이어지는 끝점은 같은 좌표로.
-
-[요청]
-${o.note}`;
-
 // ── 생각(thinking) 설정: Gemini 3 이상은 thinkingLevel, 2.x 는 thinkingBudget ──
-const LEVEL_BUDGET = { low: 1024, medium: 4096, high: -1 };
+const LEVEL_BUDGET = { low: 1024, medium: 4096, high: -1 }; // 2.x: -1 = 필요한 만큼
 const thinkingConfig = (model, level) => ver(model) >= 3
   ? { thinkingLevel: level, includeThoughts: true }
   : { thinkingBudget: LEVEL_BUDGET[level], includeThoughts: true };
 
 // ── 스트리밍 요청 하나: JSON 결과를 돌려준다 ──
-// onThink(): 생각 데이터가 올 때, onText(전체 텍스트): 결과 텍스트가 올 때, outer: 다른 요청이 실패하면 함께 중단
-async function streamJSON({ key, model, parts, schema, level, onThink = () => {}, onText = () => {}, outer, noThink = false }) {
+// onThink(): 생각 데이터가 올 때, onText(전체 텍스트): 결과 텍스트가 올 때
+async function streamJSON({ key, model, parts, schema, level, onThink = () => {}, onText = () => {}, noThink = false }) {
   const config = { responseMimeType: 'application/json', responseSchema: schema };
   if (!noThink) config.thinkingConfig = thinkingConfig(model, level);
   if (ver(model) < 3) config.temperature = 0.2; // Gemini 3 는 기본 온도(1.0) 유지가 권장
@@ -59,8 +44,6 @@ async function streamJSON({ key, model, parts, schema, level, onThink = () => {}
   let idle, timedOut = false;
   const kick = () => { clearTimeout(idle); idle = setTimeout(() => { timedOut = true; ctl.abort(); }, IDLE_MS); };
   const total = setTimeout(() => { timedOut = true; ctl.abort(); }, TOTAL_MS);
-  const stop = () => ctl.abort();
-  outer?.addEventListener('abort', stop);
   let text = '';
   try {
     kick();
@@ -74,7 +57,7 @@ async function streamJSON({ key, model, parts, schema, level, onThink = () => {}
       const raw = await res.text(), data = (() => { try { const d = JSON.parse(raw); return Array.isArray(d) ? d[0] : d; } catch (e) { return {}; } })();
       const m = data.error?.message || String(res.status);
       if (!noThink && res.status === 400 && /thinking/i.test(m)) // 이 모델이 생각 설정을 지원하지 않으면 빼고 다시
-        return await streamJSON({ key, model, parts, schema, level, onThink, onText, outer, noThink: true });
+        return await streamJSON({ key, model, parts, schema, level, onThink, onText, noThink: true });
       throw apiError(res.status, m, model);
     }
     const reader = res.body.getReader(), dec = new TextDecoder();
@@ -100,11 +83,10 @@ async function streamJSON({ key, model, parts, schema, level, onThink = () => {}
     }
     if (!text && finish && finish !== 'STOP') throw new Error(`Gemini 가 도면을 만들지 못했습니다 (${finish}). 다시 시도해 주세요`);
   } catch (e) {
-    if (outer?.aborted) throw outer.reason || e;
     if (e.name === 'AbortError' || timedOut) throw Object.assign(new Error('Gemini 응답이 멈춰 시간 초과되었습니다'), { busy: true });
     if (e instanceof TypeError) throw new Error('Gemini 에 연결할 수 없습니다 (인터넷 연결 확인)');
     throw e;
-  } finally { clearTimeout(idle); clearTimeout(total); outer?.removeEventListener('abort', stop); }
+  } finally { clearTimeout(idle); clearTimeout(total); }
 
   try { return JSON.parse(text); }
   catch (e) { throw Object.assign(new Error('Gemini 응답을 해석하지 못했습니다. 다시 시도해 주세요'), { busy: true }); }
@@ -119,32 +101,32 @@ const WALL_SCHEMA = obj({
 
 const COORD = '좌표는 이미지 전체를 기준으로 0~1000 으로 정규화한 값이다 (왼쪽 위 0,0 / 오른쪽 아래 1000,1000). y 를 먼저 쓴다.';
 
-const wallPrompt = o => `첨부한 이미지는 스터디카페 건축 평면도다. 벽만 찾아라.
+const wallPrompt = o => `첨부한 이미지는 스터디카페 건축 평면도다. 이 이미지에 그려진 벽만 찾아라.
+
+[가장 중요한 규칙]
+- 너의 생각·추측·설계 지식으로 만들지 마라. 오직 첨부한 이미지만 보고, 이미지와 똑같아지도록 좌표를 정한다.
+- 이미지에 없는 벽을 추가하지 않는다. 이미지에 있는 벽을 빼지 않는다. 보기 좋게 정리하거나 대칭으로 맞추거나 모양을 바꾸지 않는다.
+- 확실하지 않으면 이미지에 보이는 그대로 따른다. 일반적인 도면은 이럴 것이라는 짐작으로 채우지 않는다.
+
 ${COORD}
 
 - extent: 건물 외벽의 바깥 테두리를 감싸는 박스. 표제란(오른쪽 제목 칸), 좌석표, 치수선, 도면 이름은 넣지 않는다.
-- walls: 각 벽의 중심선을 [y1, x1, y2, x2] 선분으로. 다음을 모두 포함한다:
-  · 검게 칠해진 외벽·기둥 사이 벽, 창문 구간(외벽이 얇은 두 줄로 그려진 곳)도 외벽으로 이어서
+- walls: 이미지에 그려진 각 벽의 중심선을 [y1, x1, y2, x2] 선분으로. 다음을 모두 포함한다:
+  · 검게 칠해진 외벽, 창문 구간(외벽이 얇은 두 줄로 그려진 곳)
   · 회색·빨간색으로 칠해진 칸막이 벽, 화장실·창고·스터디룸·카페를 나누는 얇은 벽
-- 외벽 윤곽을 한 바퀴 빠짐없이 따라간다. 사선 벽은 사선 그대로. 꺾이는 곳마다 선분을 나누고, 이어지는 선분의 끝점은 같은 좌표로.
-- 문은 벽으로 보고 문 자리도 벽을 이어서 그린다.
+- 외벽 윤곽을 이미지대로 한 바퀴 따라간다. 사선 벽은 사선 그대로. 꺾이는 곳마다 선분을 나누고, 이어지는 선분의 끝점은 같은 좌표로.
+- 문 자리처럼 이미지에서 벽이 끊긴 곳은 이미지대로 비운다.
 - 벽이 아닌 것: 책상·의자·책상 칸막이, 변기·싱크대 같은 집기, 문 열림 호, 얇은 치수선, 숫자·글자, 계단, 표제란, 좌석표, 도면 테두리.
-- width_mm: 치수선에 적힌 건물 전체 가로 길이(mm, 가장 바깥 치수). 없으면 0.${o.note ? `\n\n[요청]\n${o.note}` : ''}`;
+- width_mm: 치수선에 적힌 건물 전체 가로 길이(mm, 가장 바깥 치수). 없으면 0.${o.note ? `\n\n[요청] (이미지에 그려진 것 안에서만 반영한다)\n${o.note}` : ''}`;
 
-// o: 폼 값, image: dataURL 또는 null, level: low|medium|high, onProgress({ phase: 'think'|'draw'|'refine', count })
-async function generatePlan(o, image, key, model, level = 'medium', onProgress = () => {}) {
+// o: 폼 값, image: dataURL, onProgress({ phase: 'think'|'draw'|'refine', count })
+// 정확도가 가장 중요해서 생각(thinking) 수준은 항상 가장 높게(high) 한다
+async function generatePlan(o, image, key, model, onProgress = () => {}) {
   const count = (t, re) => (t.match(re) || []).length;
-  if (!image) {
-    const p = await streamJSON({
-      key, model, level, schema: DESIGN_SCHEMA, parts: [{ text: designPrompt(o) }],
-      onThink: () => onProgress({ phase: 'think' }), onText: t => onProgress({ phase: 'draw', count: Math.max(0, count(t, /\[/g) - 1) })
-    });
-    return designToPlan(p);
-  }
   const m = image.match(/^data:(image\/(?:png|jpeg|webp));base64,(.+)$/);
   const [w, px] = await Promise.all([
     streamJSON({
-      key, model, level, schema: WALL_SCHEMA, parts: [{ text: wallPrompt(o) }, { inline_data: { mime_type: m[1], data: m[2] } }],
+      key, model, level: 'high', schema: WALL_SCHEMA, parts: [{ text: wallPrompt(o) }, { inline_data: { mime_type: m[1], data: m[2] } }],
       onThink: () => onProgress({ phase: 'think' }), onText: t => onProgress({ phase: 'draw', count: Math.max(0, count(t, /\[/g) - 2) })
     }),
     readPixels(image).then(wallMasks) // Gemini 를 기다리는 동안 이미지 분석
@@ -357,12 +339,6 @@ function traceToPlan(w, P) {
 
   const walls = tidyWalls(segs.map(({ seg, t }) => [cx(seg[0]), cy(seg[1]), cx(seg[2]), cy(seg[3]), Math.max(4, Math.round(t * k))]));
   return finalize({ width: Math.round((x1 - x0 + 1) * k), height: Math.round((y1 - y0 + 1) * k), wallThickness: 15, walls, shapes });
-}
-
-// 설계 결과(cm) → 도면
-function designToPlan(p) {
-  const walls = tidyWalls((p.walls || []).filter(a => Array.isArray(a) && a.length === 4).map(a => a.map(Math.round)));
-  return finalize({ width: Math.round(p.width), height: Math.round(p.height), wallThickness: 15, walls });
 }
 
 // 형식·범위 정리 (Gemini 응답을 그대로 믿지 않는다)

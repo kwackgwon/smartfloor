@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SmartFloor</title>
-  <link rel="stylesheet" href="style.css?v=3">
+  <link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
   <header class="top">
@@ -13,75 +13,64 @@
         <span class="logo">S</span>
         <div>
           <h1>SmartFloor</h1>
-          <p>Gemini 도면 자동 생성</p>
+          <p>도면 이미지 → 벽 도면</p>
         </div>
       </div>
-      <span id="msg" class="chip">API 키를 넣고 도면 이미지를 올려 주세요</span>
+      <span id="msg" class="chip">도면 이미지를 올려 주세요</span>
     </div>
   </header>
 
   <main class="wrap">
     <form id="form" class="card panel">
-      <h2>도면 생성</h2>
+      <section class="step">
+        <h2><span class="num">1</span>도면 이미지</h2>
+        <label id="drop" class="drop" for="file">
+          <img id="preview" alt="" hidden>
+          <span id="drop-text"><strong>끌어다 놓거나 클릭해서 선택</strong><br>PNG · JPG · WEBP, 10MB 이하</span>
+        </label>
+        <input type="file" id="file" accept=".png,.jpg,.jpeg,.webp" hidden>
+        <p class="note" id="drop-note" hidden>다른 도면을 쓰려면 이미지를 다시 올리세요</p>
+      </section>
 
-      <label><span>Gemini API 키 · <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">발급받기 ↗</a></span>
-        <input id="key" type="password" autocomplete="off" placeholder="AIza...">
-      </label>
-      <label>모델 (키 입력 시 최신 모델 자동 선택)<input id="model" list="models" value="gemini-3.8-flash"></label>
-      <datalist id="models"></datalist>
-      <label>생성 방식
-        <select id="level">
-          <option value="low">빠르게 (간단한 도면)</option>
-          <option value="medium" selected>균형 (권장)</option>
-          <option value="high">정밀하게 (복잡한 도면, 느림)</option>
-        </select>
-      </label>
-
-      <label id="drop" class="drop" for="file">
-        <img id="preview" alt="" hidden>
-        <span id="drop-text"><strong>참고 도면 이미지</strong><br>끌어다 놓거나 클릭 · PNG/JPG 10MB 이하</span>
-      </label>
-      <input type="file" id="file" accept=".png,.jpg,.jpeg,.webp" hidden>
-      <button type="button" class="link" id="clear-img" hidden>이미지 제거</button>
-
-      <label>요청 사항 (선택)
-        <textarea name="note" rows="3" placeholder="예) 오른쪽 아래 창고 벽은 빼 주세요 · 이미지 없이 쓰면 설명대로 벽을 설계합니다"></textarea>
-      </label>
+      <section class="step">
+        <h2><span class="num">2</span>요청 사항 <small>선택</small></h2>
+        <textarea name="note" rows="2" placeholder="예) 오른쪽 아래 창고 벽은 빼 주세요"></textarea>
+      </section>
 
       <button class="primary big" id="gen">Gemini로 도면 생성</button>
+
+      <details id="settings" class="settings">
+        <summary><span>Gemini 설정</span><span id="key-state" class="state">API 키 필요</span></summary>
+        <label><span>API 키 · <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">발급받기 ↗</a></span>
+          <input id="key" type="password" autocomplete="off" placeholder="AIza...">
+        </label>
+        <label>모델 <small>키를 넣으면 최신 모델 자동 선택</small><input id="model" list="models" value="gemini-3.8-flash"></label>
+        <datalist id="models"></datalist>
+      </details>
     </form>
 
-    <section class="main">
-      <div class="card">
-        <div class="toolbar">
-          <div class="seg" role="group" aria-label="도구">
-            <button data-mode="wall" class="on">벽 그리기</button>
-            <button data-mode="erase">지우개</button>
-          </div>
-          <div class="grp right">
-            <button class="ghost" id="png">PNG</button>
-            <button class="ghost" id="export">JSON</button>
-            <button class="primary" id="save">저장</button>
-          </div>
+    <section class="card view">
+      <div class="toolbar">
+        <span class="hint" id="hint">도면 위를 드래그하면 벽을 추가합니다 · Shift = 사선</span>
+        <div class="grp">
+          <button type="button" class="ghost" id="png">PNG</button>
+          <button type="button" class="ghost" id="export">JSON</button>
+          <button type="button" class="primary" id="save">저장</button>
         </div>
-        <div class="stage" id="stage">
-          <div id="empty" class="empty">
-            <b>아직 도면이 없습니다</b>
-            왼쪽에 참고 도면 이미지를 올린 뒤<br><b>Gemini로 도면 생성</b>을 누르세요.
-          </div>
-          <div id="loading" class="empty" hidden><span class="spin"></span><span id="loading-text">Gemini가 도면을 그리는 중…</span></div>
-          <canvas id="c" hidden></canvas>
+      </div>
+      <div class="stage" id="stage">
+        <div id="empty" class="empty">
+          <b>아직 도면이 없습니다</b>
+          왼쪽에 도면 이미지를 올린 뒤 <b>Gemini로 도면 생성</b>을 누르세요.
         </div>
-        <div class="legend">
-          <span><i class="dot wall"></i>벽</span>
-          <span class="hint" id="hint"></span>
-        </div>
+        <div id="loading" class="empty" hidden><span class="spin"></span><span id="loading-text">Gemini가 도면을 그리는 중…</span></div>
+        <canvas id="c" hidden></canvas>
       </div>
     </section>
   </main>
 
   <!-- ?v= 는 배포할 때마다 올린다 (브라우저가 예전 파일을 쓰지 않게) -->
-  <script src="gemini.js?v=3"></script>
-  <script src="app.js?v=3"></script>
+  <script src="gemini.js?v=4"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

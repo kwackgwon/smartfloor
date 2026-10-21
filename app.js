@@ -1,14 +1,10 @@
 // 모든 좌표는 cm. 그릴 때만 화면 배율 s 를 곱한다.
 // plan = { v, width, height, wallThickness, walls: [[x1,y1,x2,y2,두께?]], shapes: [[고리...]] } (gemini.js 참고)
-// 저장: localStorage 'smartfloor' = plan, 'smartfloor-key' / '-model' / '-level' = Gemini 설정
+// 저장: localStorage 'smartfloor' = plan, 'smartfloor-key' / '-model' = Gemini 설정
 const KEY = 'smartfloor', PLAN_V = 2, WALL = '#D9D9D9', EDGE = '#BDBDBD', GRID = 10, PAD = 30; // PAD: 외벽이 잘리지 않게 도면 둘레 여백 (cm)
-const HINT = {
-  wall: '드래그해서 벽 추가 (수평/수직 자동 정렬 · Shift = 사선)',
-  erase: '벽을 클릭해 삭제'
-};
 const $ = id => document.getElementById(id);
 const cvs = $('c'), g = cvs.getContext('2d'), msg = $('msg'), file = $('file'), form = $('form');
-let plan = null, image = null, mode = 'wall', s = 1, tmp = null;
+let plan = null, image = null, s = 1, tmp = null;
 
 const say = (t, cls = 'chip ok') => { msg.textContent = t; msg.title = t; msg.className = cls; };
 const snap = (v, k = GRID) => Math.round(v / k) * k;
@@ -16,20 +12,6 @@ const pos = e => {
   const r = cvs.getBoundingClientRect();
   return { x: (e.clientX - r.left) / r.width * (plan.width + 2 * PAD) - PAD, y: (e.clientY - r.top) / r.height * (plan.height + 2 * PAD) - PAD };
 };
-const distSeg = (p, [x1, y1, x2, y2]) => {
-  const dx = x2 - x1, dy = y2 - y1, l = dx * dx + dy * dy;
-  const k = l ? Math.max(0, Math.min(1, ((p.x - x1) * dx + (p.y - y1) * dy) / l)) : 0;
-  return Math.hypot(p.x - (x1 + k * dx), p.y - (y1 + k * dy));
-};
-
-// 점이 칠해진 벽 모양 안에 있는지 (구멍 포함, evenodd)
-const inShape = (p, sh) => sh.reduce((inside, l) => {
-  for (let i = 0, j = l.length - 1; i < l.length; j = i++) {
-    const [xi, yi] = l[i], [xj, yj] = l[j];
-    if ((yi > p.y) !== (yj > p.y) && p.x < (xj - xi) * (p.y - yi) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
-}, false);
 
 function layout() { // 화면 폭에 맞춰 캔버스 크기 결정 (고해상도 화면 대응)
   if (!plan) return;
@@ -85,13 +67,13 @@ function save() {
 form.onsubmit = async e => {
   e.preventDefault();
   const f = Object.fromEntries(new FormData(form)), key = $('key').value.trim(), model = $('model').value.trim() || DEFAULT_MODEL;
-  if (!key) { say('Gemini API 키를 입력하세요', 'chip err'); $('key').focus(); return; }
-  if (!image && !f.note.trim()) { say('참고 도면 이미지를 올리거나 요청 사항을 입력해 주세요', 'chip err'); return; }
+  if (!image) { say('도면 이미지를 먼저 올려 주세요', 'chip err'); return; }
+  if (!key) { say('Gemini API 키를 입력하세요', 'chip err'); $('settings').open = true; $('key').focus(); return; }
   if (plan && !confirm('현재 도면과 편집 내용이 새 도면으로 바뀝니다. 계속할까요?')) return;
   const btn = $('gen'); btn.disabled = true;
   $('empty').hidden = true; cvs.hidden = true; $('loading').hidden = false;
   // 진행 상황 표시: 분석 중 → 벽 n개 그리는 중 → 다듬는 중 + 경과 시간 (멈춘 것처럼 보이지 않게)
-  const level = $('level').value, t0 = Date.now(), base = image ? '도면 분석 중' : '도면 설계 중';
+  const t0 = Date.now(), base = '도면 분석 중';
   let stage = base, pre = '';
   const status = () => {
     const t = `Gemini ${pre}${stage}… ${Math.round((Date.now() - t0) / 1000)}초`;
@@ -108,7 +90,7 @@ form.onsubmit = async e => {
     const tries = [model, ...(other ? [other] : []), model].slice(0, 3); // 최대 3번 시도
     let d, last;
     for (let i = 0; i < tries.length && !d; i++) {
-      try { d = await generatePlan(f, image, key, tries[i], level, onProgress); }
+      try { d = await generatePlan(f, image, key, tries[i], onProgress); }
       catch (err) {
         last = err;
         if (err.suggest && !tries.includes(err.suggest)) tries.splice(i + 1, 0, err.suggest);
@@ -145,31 +127,24 @@ function setImage(f) {
     const cg = c.getContext('2d'); cg.fillStyle = '#fff'; cg.fillRect(0, 0, c.width, c.height);
     cg.drawImage(raw, 0, 0, c.width, c.height);
     image = c.toDataURL('image/jpeg', 0.9);
-    $('preview').src = image; $('preview').hidden = $('clear-img').hidden = false; $('drop-text').hidden = true;
+    $('preview').src = image; $('preview').hidden = $('drop-note').hidden = false; $('drop-text').hidden = true;
     URL.revokeObjectURL(raw.src);
-    say('참고 도면이 첨부되었습니다', 'chip');
+    say('도면 이미지가 첨부되었습니다', 'chip');
   };
   raw.onerror = () => say('이미지를 읽을 수 없습니다', 'chip err');
   raw.src = URL.createObjectURL(f);
 }
 file.onchange = () => { setImage(file.files[0]); file.value = ''; };
-$('clear-img').onclick = () => {
-  image = null; $('preview').hidden = $('clear-img').hidden = true; $('drop-text').hidden = false;
-};
 const drop = $('drop');
 drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
 drop.ondragleave = () => drop.classList.remove('over');
 drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); setImage(e.dataTransfer.files[0]); };
 
-// ── 편집 ────────────────────────────────────────────────
+// ── 편집: 드래그로 벽 추가 ─────────────────────────────
 cvs.onpointerdown = e => {
   if (!plan) return;
-  const p = pos(e);
-  if (mode === 'wall') { const x = snap(p.x), y = snap(p.y); tmp = [x, y, x, y]; }
-  else {
-    plan.walls = plan.walls.filter(w => distSeg(p, w) > (w[4] || plan.wallThickness) / 2 + 6 / s);
-    plan.shapes = (plan.shapes || []).filter(sh => !inShape(p, sh) && !sh.some(l => l.some((q, i) => distSeg(p, [...q, ...l[(i + 1) % l.length]]) <= 6 / s)));
-  }
+  const p = pos(e), x = snap(p.x), y = snap(p.y);
+  tmp = [x, y, x, y];
   cvs.setPointerCapture(e.pointerId); draw();
 };
 cvs.onpointermove = e => {
@@ -185,12 +160,6 @@ cvs.onpointerup = () => {
   tmp = null; if (plan) draw();
 };
 
-document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => {
-  mode = b.dataset.mode; $('hint').textContent = HINT[mode];
-  document.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('on', x === b));
-});
-cvs.style.cursor = 'crosshair';
-$('hint').textContent = HINT[mode];
 $('save').onclick = save;
 
 function download(href, name) {
@@ -211,9 +180,15 @@ $('png').onclick = () => { // 최대 2px/cm (긴 변 4000px 이하) 해상도로
 let rz; addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(layout, 100); });
 
 // API 키·모델은 이 브라우저에만 저장 (다른 곳으로 전송되지 않음, Gemini 호출에만 사용)
-try { $('key').value = localStorage.getItem(KEY + '-key') || ''; $('model').value = localStorage.getItem(KEY + '-model') || $('model').value; $('level').value = localStorage.getItem(KEY + '-level') || 'medium'; } catch (e) { /* 저장소 사용 불가 */ }
+try { $('key').value = localStorage.getItem(KEY + '-key') || ''; $('model').value = localStorage.getItem(KEY + '-model') || $('model').value; } catch (e) { /* 저장소 사용 불가 */ }
+const keyState = () => { // 키가 없으면 설정을 펼쳐 둔다
+  const ok = !!$('key').value.trim();
+  $('key-state').textContent = ok ? '키 입력됨' : 'API 키 필요'; $('key-state').className = ok ? 'state ok' : 'state';
+  if (!ok) $('settings').open = true;
+};
+keyState();
 function saveSettings() {
-  try { localStorage.setItem(KEY + '-key', $('key').value.trim()); localStorage.setItem(KEY + '-model', $('model').value.trim()); localStorage.setItem(KEY + '-level', $('level').value); } catch (e) { /* 저장소 사용 불가 */ }
+  try { localStorage.setItem(KEY + '-key', $('key').value.trim()); localStorage.setItem(KEY + '-model', $('model').value.trim()); } catch (e) { /* 저장소 사용 불가 */ }
 }
 async function refreshModels() { // 키로 쓸 수 있는 모델 목록을 받아 자동 완성에 채운다
   const key = $('key').value.trim();
@@ -226,8 +201,8 @@ async function refreshModels() { // 키로 쓸 수 있는 모델 목록을 받�
     if (best && (!names.includes(cur) || ver(cur) < ver(best))) { $('model').value = best; saveSettings(); }
   } catch (e) { /* 키 오류 등은 생성할 때 안내 */ }
 }
-$('model').onchange = $('level').onchange = saveSettings;
-$('key').onchange = () => { saveSettings(); refreshModels(); };
+$('model').onchange = saveSettings;
+$('key').onchange = () => { saveSettings(); keyState(); refreshModels(); };
 refreshModels();
 
 try { // 새로고침 시 저장된 도면 복원 (예전 형식 저장본은 버린다)
