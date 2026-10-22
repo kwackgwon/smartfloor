@@ -59,7 +59,7 @@ async function streamJSON({ key, model, parts, schema, level, onThink = () => {}
       const m = data.error?.message || String(res.status);
       if (!noThink && res.status === 400 && /thinking/i.test(m)) // 이 모델이 생각 설정을 지원하지 않으면 빼고 다시
         return await streamJSON({ key, model, parts, schema, level, onThink, onText, noThink: true });
-      throw apiError(res.status, m, model);
+      throw apiError(res.status, m, model, data.error?.details);
     }
     const reader = res.body.getReader(), dec = new TextDecoder();
     let buf = '', finish = '';
@@ -73,7 +73,7 @@ async function streamJSON({ key, model, parts, schema, level, onThink = () => {}
         const line = buf.slice(0, k).trim(); buf = buf.slice(k + 1);
         if (!line.startsWith('data:')) continue;
         let ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { continue; }
-        if (ev.error) throw apiError(ev.error.code || 500, ev.error.message, model);
+        if (ev.error) throw apiError(ev.error.code || 500, ev.error.message, model, ev.error.details);
         const c = ev.candidates?.[0];
         if (c?.finishReason) finish = c.finishReason;
         for (const part of c?.content?.parts || []) {
@@ -84,7 +84,7 @@ async function streamJSON({ key, model, parts, schema, level, onThink = () => {}
     }
     if (!text && finish && finish !== 'STOP') throw new Error(`Gemini 가 도면을 만들지 못했습니다 (${finish}). 다시 시도해 주세요`);
   } catch (e) {
-    if (e.name === 'AbortError' || timedOut) throw Object.assign(new Error('Gemini 응답이 너무 오래 걸려 시간 초과되었습니다'), { busy: true, timeout: true });
+    if (e.name === 'AbortError' || timedOut) throw Object.assign(new Error('Gemini 응답이 너무 오래 걸려 시간 초과되었습니다'), { busy: true, timeout: true, kind: 'timeout' });
     if (e instanceof TypeError) throw new Error('Gemini 에 연결할 수 없습니다 (인터넷 연결 확인)');
     throw e;
   } finally { clearTimeout(idle); clearTimeout(total); }
@@ -357,6 +357,44 @@ function bridgeWindows(K, light, W, H) {
   return res;
 }
 
+// 외벽 닫기: 건물 윤곽(발자국)을 구해, 그 윤곽을 따라 외벽 두께만큼 벽을 깐다 → 입구·문·창문 틈까지 외벽을 모두 닫는다
+// · 발자국: 벽을 닫힘 연산(긴 변의 10% 이하 틈 메우기)한 뒤, 이미지 테두리에서 닿지 않는 곳 전부
+// · 외벽 두께: 윤곽에서 안쪽으로 1px 씩 들어가며, 원래 벽이 덮는 비율이 바깥 몇 겹의 절반 아래로 떨어지기 직전까지
+function closeExterior(K, W, H) {
+  const S = Math.max(W, H), r = Math.round(S * 0.05), N = W * H;
+  const closed = morph(morph(K, W, H, r, false), W, H, r, true);
+  const F = new Uint8Array(N).fill(1), st = new Int32Array(N); let sp = 0;
+  const push = i => { if (F[i] && !closed[i]) { F[i] = 0; st[sp++] = i; } };
+  for (let x = 0; x < W; x++) { push(x); push((H - 1) * W + x); }
+  for (let y = 0; y < H; y++) { push(y * W); push(y * W + W - 1); }
+  while (sp) { const i = st[--sp], x = i % W; if (x > 0) push(i - 1); if (x < W - 1) push(i + 1); if (i >= W) push(i - W); if (i < N - W) push(i + W); }
+  // 바깥까지 거리 (체스판 거리, 2번 훑기)
+  const D = new Int32Array(N), INF = 1 << 29;
+  for (let i = 0; i < N; i++) D[i] = F[i] ? INF : 0;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (!D[i]) continue;
+    let m = D[i];
+    if (x > 0) m = Math.min(m, D[i - 1] + 1); else m = 1;
+    if (y > 0) { m = Math.min(m, D[i - W] + 1); if (x > 0) m = Math.min(m, D[i - W - 1] + 1); if (x < W - 1) m = Math.min(m, D[i - W + 1] + 1); } else m = 1;
+    D[i] = m;
+  }
+  for (let y = H - 1; y >= 0; y--) for (let x = W - 1; x >= 0; x--) {
+    const i = y * W + x; if (!D[i]) continue;
+    let m = D[i];
+    if (x < W - 1) m = Math.min(m, D[i + 1] + 1); else m = 1;
+    if (y < H - 1) { m = Math.min(m, D[i + W] + 1); if (x < W - 1) m = Math.min(m, D[i + W + 1] + 1); if (x > 0) m = Math.min(m, D[i + W - 1] + 1); } else m = 1;
+    D[i] = m;
+  }
+  const MAX = Math.round(S * 0.03), tot = new Float64Array(MAX + 2), hit = new Float64Array(MAX + 2);
+  for (let i = 0; i < N; i++) if (D[i] && D[i] <= MAX + 1) { tot[D[i]]++; if (K[i]) hit[D[i]]++; }
+  const cov = d => tot[d] ? hit[d] / tot[d] : 0, base = (cov(1) + cov(2) + cov(3)) / 3;
+  let t = 3;
+  while (t < MAX && cov(t + 1) >= base * 0.5) t++;
+  const out = K.slice();
+  for (let i = 0; i < N; i++) if (D[i] && D[i] <= t) out[i] = 1;
+  return out;
+}
+
 // 한 방향(가로 또는 세로)으로만 팽창: vertical=true 면 위아래로 r 만큼
 function morph1(m, W, H, r, vertical) {
   const out = new Uint8Array(W * H), n = vertical ? W : H, len = vertical ? H : W, at = (a, b) => vertical ? b * W + a : a * W + b;
@@ -437,7 +475,7 @@ function traceToPlan(w, P) {
   list.forEach(c => { if (c.area >= minArea && Math.max(c.x1 - c.x0, c.y1 - c.y0) >= minDim && inEx((c.x0 + c.x1) / 2, (c.y0 + c.y1) / 2)) keepId[c.id] = 1; });
   const K0 = new Uint8Array(W * H);
   for (let i = 0; i < W * H; i++) if (lab[i] && keepId[lab[i]]) K0[i] = 1;
-  const K = bridgeWindows(K0, P.light, W, H); // 외벽 창문 구간 메우기
+  const K = closeExterior(bridgeWindows(K0, P.light, W, H), W, H); // 외벽 창문 구간 메우기 → 외벽 전부 닫기
 
   // 2. Gemini 벽 선분: 칠해진 벽에 맞추고(창문 구간 등 메우기), 안 되면 얇은 선에 맞춘다(얇은 칸막이). 근거 픽셀이 없으면 버린다
   const segs = [];
@@ -491,13 +529,18 @@ const straighten = ([x1, y1, x2, y2, ...t]) => { // t: 두께 (있으면 그대�
   if (Math.abs(dx) <= Math.abs(dy) * 0.07) { const x = Math.round((x1 + x2) / 2); return [x, y1, x, y2, ...t]; }
   return [x1, y1, x2, y2, ...t];
 };
-function apiError(status, m, model) {
+// details: Google 오류의 상세 정보 (RetryInfo.retryDelay = 다시 시도까지 기다릴 시간, QuotaFailure = 어떤 한도인지)
+function apiError(status, m, model, details = []) {
   const busy = status === 503 || status === 500 || /high demand|overloaded|unavailable/i.test(m), quota = status === 429;
   const err = new Error(/API key not valid/i.test(m) ? 'API 키가 올바르지 않습니다'
     : busy ? 'Gemini 사용량이 많아 지금은 생성할 수 없습니다. 1~2분 뒤 다시 시도해 주세요'
     : quota ? 'Gemini 사용 한도를 넘었습니다. 잠시 후 다시 시도하거나 다른 모델을 선택해 주세요'
     : 'Gemini 오류: ' + m);
   err.busy = busy || quota; // 일시적인 오류: app.js 가 기다렸다 재시도하거나 다른 모델로 시도
+  err.kind = quota ? 'quota' : busy ? 'busy' : '';
+  const delay = (details || []).map(d => d && d.retryDelay).find(Boolean); // 예: "37s"
+  if (delay) err.retryAfter = Math.ceil(parseFloat(delay));
+  err.daily = quota && /per ?day/i.test(JSON.stringify(details || []) + m); // 하루 한도인지
   // 단종·미지원 모델이면 Google 이 안내하는 대체 모델을 함께 넘긴다
   if (/no longer available|not found|not supported/i.test(m)) err.suggest = (String(m).match(/models\/(gemini-[\w.-]+)/g) || []).map(x => x.slice(7).replace(/\.+$/, '')).find(x => x !== model) || DEFAULT_MODEL;
   return err;

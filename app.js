@@ -65,14 +65,41 @@ function save() {
   catch (e) { say('저장 실패 (브라우저 저장소를 사용할 수 없음)', 'chip err'); }
 }
 
+// ── 오류 안내 (사용량 폭주·한도 초과·시간 초과) ───────────
+let noticeTimer;
+const AI_STUDIO = '<a href="https://aistudio.google.com" target="_blank" rel="noopener">Google AI Studio</a>';
+function showNotice(err, partial) {
+  const N = {
+    busy: ['Google Gemini 서버가 붐벼요', '내 키나 설정 문제가 아니라 Google 쪽이 잠시 바쁜 거예요. 조금 뒤 다시 시도하면 대부분 풀려요. 계속되면 ⚙ Gemini 설정에서 다른 모델을 골라 보세요.', 60],
+    quota: err.daily
+      ? ['오늘 쓸 수 있는 사용량을 다 썼어요', `이 API 키의 하루 한도를 넘었어요. 내일 다시 쓰거나, ⚙ Gemini 설정에서 다른 모델을 고르세요 (한도는 모델마다 따로예요). 자주 쓴다면 ${AI_STUDIO}에서 결제를 연결하면 한도가 크게 늘어요.`, 0]
+      : ['API 키 사용 한도를 넘었어요', `짧은 시간에 요청이 많았어요. 잠시 기다리면 풀려요. 자주 막힌다면 ${AI_STUDIO}에서 남은 사용량을 확인하거나 결제를 연결하세요.`, 60],
+    timeout: ['Gemini 응답이 너무 오래 걸렸어요', '도면이 복잡하거나 Google 쪽이 바쁠 때 생겨요. 잠시 뒤 다시 시도해 보세요.', 30]
+  }[err.kind];
+  if (!N) return;
+  const [title, body, def] = N;
+  $('notice-title').textContent = title;
+  $('notice-body').innerHTML = body + (partial ? '<br>그동안 이미지 분석만으로 만든 도면을 보여 드리고 있어요 (얇은 칸막이·실제 치수는 빠질 수 있어요).' : '');
+  let left = err.retryAfter || def;
+  clearInterval(noticeTimer);
+  const tickWait = () => {
+    $('notice-wait').textContent = err.daily && !err.retryAfter ? '' : left > 0 ? `약 ${left}초 뒤 다시 시도하는 걸 권해요` : '지금 다시 시도할 수 있어요';
+    if (left-- <= 0) clearInterval(noticeTimer);
+  };
+  tickWait(); noticeTimer = setInterval(tickWait, 1000);
+  $('notice').hidden = false;
+}
+const hideNotice = () => { clearInterval(noticeTimer); $('notice').hidden = true; };
+$('retry').onclick = () => generate(false);
+
 // ── Gemini 생성 ──────────────────────────────────────────
-form.onsubmit = async e => {
-  e.preventDefault();
+form.onsubmit = e => { e.preventDefault(); generate(); };
+async function generate(ask = true) { // ask: 기존 도면을 바꿀지 물어볼지 (다시 시도 때는 묻지 않는다)
   const f = Object.fromEntries(new FormData(form)), key = $('key').value.trim(), model = $('model').value.trim() || DEFAULT_MODEL;
   if (!image) { say('도면 이미지를 먼저 올려 주세요', 'chip err'); return; }
   if (!key) { say('Gemini API 키를 입력하세요', 'chip err'); $('settings').open = true; $('key').focus(); return; }
-  if (plan && !confirm('현재 도면과 편집 내용이 새 도면으로 바뀝니다. 계속할까요?')) return;
-  const btn = $('gen'); btn.disabled = true;
+  if (ask && plan && !confirm('현재 도면과 편집 내용이 새 도면으로 바뀝니다. 계속할까요?')) return;
+  const btn = $('gen'); btn.disabled = true; hideNotice();
   $('empty').hidden = true; cvs.hidden = true; $('loading').hidden = false;
   // 진행 상황 표시: 분석 중 → 벽 n개 그리는 중 → 다듬는 중 + 경과 시간 (멈춘 것처럼 보이지 않게)
   // 이미지 픽셀만으로 만든 미리보기가 먼저 뜨고, Gemini 답이 오면 최종 도면으로 바뀐다
@@ -91,7 +118,7 @@ form.onsubmit = async e => {
   try {
     // 재시도 규칙 (최대 3번):
     //  · 시간 초과 → 같은 모델, 생각 수준 low 로 (빠르게)
-    //  · 사용량 폭주 등 일시 오류 → 잠시 기다렸다 다른 flash 모델로 (없으면 같은 모델)
+    //  · 사용량 폭주 등 일시 오류 → 잠시 기다렸다 다른 flash 모델로 (없으면 같은 모델, 한도 초과면 멈춤)
     //  · 단종 모델 → Google 이 안내한 모델로
     const other = [...$('models').options].map(o => o.value).find(n => n !== model && n.endsWith('-flash'));
     let d, last, cur = { model, level: 'high' };
@@ -101,6 +128,7 @@ form.onsubmit = async e => {
         last = err;
         if (!err.busy && !err.suggest) throw err;
         if (i === 2 || (err.timeout && cur.level === 'low')) break; // 빠르게 해도 시간 초과면 더 기다리지 않는다
+        if (err.kind === 'quota' && (!other || cur.model === other)) break; // 한도 초과: 같은 모델은 다시 해도 막히므로 다른 모델만 시도
         const next = err.suggest ? { model: err.suggest, level: cur.level }
           : err.timeout ? { model: cur.model, level: 'low' }
           : { model: other && cur.model !== other ? other : cur.model, level: cur.level };
@@ -123,8 +151,9 @@ form.onsubmit = async e => {
       if (plan) cvs.hidden = false; else $('empty').hidden = false;
       say(err.message, 'chip err');
     }
+    showNotice(err, preview);
   } finally { clearInterval(tick); btn.disabled = false; }
-};
+}
 
 // ── 참고 도면 이미지 ─────────────────────────────────────
 function setImage(f) {
