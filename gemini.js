@@ -148,24 +148,48 @@ async function readPixels(dataURL) {
   return { W: im.width, H: im.height, d: g.getImageData(0, 0, im.width, im.height).data };
 }
 
-// raw: 진한 무채색 또는 빨간색 픽셀 (벽·칸막이 후보, 글자·선 포함), light: 연한 회색 선까지 포함
+// 벽 색 고르기: 도면마다 벽 색이 다르다 (검게 칠한 CAD 도면, 연회색 #D9D9D9 로 칠한 디자인 도면 등).
+// 무채색 밝기 분포의 봉우리마다 그 밝기의 두꺼운 픽셀을 모아 보고, 가장 크게 이어진 덩어리가
+// 가장 넓은 범위를 감싸는 밝기를 벽 색으로 고른다 (벽은 건물을 감싸는 하나의 그물, 좌석은 흩어진 작은 상자)
+// 반환: { dark: true } (진한 벽 + 빨간 칸막이) 또는 { dark: false, lo, hi } (그 밝기 범위)
+function pickWallTone({ W, H, d }) {
+  const f = 4, w = Math.floor(W / f), h = Math.floor(H / f), av = new Uint8Array(w * h), gray = new Uint8Array(w * h), red = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { // 1/4 로 줄여서 빠르게
+    const k = 4 * ((y * f + 2) * W + x * f + 2), r = d[k], g = d[k + 1], b = d[k + 2], i = y * w + x;
+    av[i] = (r + g + b) / 3; gray[i] = Math.max(r, g, b) - Math.min(r, g, b) < 40 && av[i] < 245 ? 1 : 0;
+    red[i] = r > 150 && r - g > 45 && r - b > 45 ? 1 : 0;
+  }
+  const hist = new Float64Array(32);
+  for (let i = 0; i < w * h; i++) if (gray[i]) hist[av[i] >> 3]++;
+  const cands = [{ dark: true }];
+  for (let k = 18; k < 31; k++) // 밝은 쪽 봉우리 (144 이상): 전체의 0.5% 넘게 차지하는 밝기
+    if (hist[k] > w * h * 0.005 && hist[k] >= hist[k - 1] && hist[k] >= hist[k + 1]) cands.push({ dark: false, lo: k * 8 - 18, hi: k * 8 + 26 });
+  let best = cands[0], bestScore = -1;
+  for (const c of cands) {
+    const m = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) m[i] = c.dark ? ((gray[i] && av[i] < 140) || red[i] ? 1 : 0) : (gray[i] && av[i] >= c.lo && av[i] <= c.hi ? 1 : 0);
+    const { list } = components(morph(morph(m, w, h, 1, true), w, h, 1, false), w, h);
+    const score = Math.max(0, ...list.map(q => (q.x1 - q.x0 + 1) * (q.y1 - q.y0 + 1)));
+    if (score > bestScore) { bestScore = score; best = c; }
+  }
+  return best;
+}
+
+// raw: 벽 색 픽셀 (벽·칸막이 후보, 같은 색 글자·선 포함), light: 연한 회색 선까지 포함 (창문 선 확인용)
 // wall: raw 에서 5px 보다 얇은 것(치수선·글자·집기 선)을 지운 것 = 칠해진 벽
-function wallMasks({ W, H, d }) {
-  const raw = new Uint8Array(W * H);
+function wallMasks(P) {
+  const { W, H, d } = P, tone = pickWallTone(P), raw = new Uint8Array(W * H), light = new Uint8Array(W * H);
   for (let i = 0; i < W * H; i++) {
     const r = d[4 * i], g = d[4 * i + 1], b = d[4 * i + 2], av = (r + g + b) / 3, ch = Math.max(r, g, b) - Math.min(r, g, b);
-    raw[i] = (av < 140 && ch < 50) || (r > 150 && r - g > 45 && r - b > 45) ? 1 : 0;
+    raw[i] = tone.dark ? ((av < 140 && ch < 50) || (r > 150 && r - g > 45 && r - b > 45) ? 1 : 0) : (ch < 40 && av >= tone.lo && av <= tone.hi ? 1 : 0);
+    light[i] = raw[i] || (av < 200 && ch < 50) ? 1 : 0;
   }
-  const light = new Uint8Array(W * H); // 연한 회색 선까지 (창문 선 확인용)
-  for (let i = 0; i < W * H; i++) {
-    const r = d[4 * i], g = d[4 * i + 1], b = d[4 * i + 2];
-    light[i] = raw[i] || ((r + g + b) / 3 < 200 && Math.max(r, g, b) - Math.min(r, g, b) < 50) ? 1 : 0;
-  }
-  return { W, H, raw, light, wall: morph(morph(raw, W, H, 2, true), W, H, 2, false) };
+  return { W, H, raw, light, tone, wall: morph(morph(raw, W, H, 2, true), W, H, 2, false) };
 }
 
 // 정사각형(2r+1) 침식/팽창. 가로·세로로 나눠 창 안의 1 개수를 세서 빠르게 계산
-function morph(m, W, H, r, erode) {
+// edgeFilled: 침식할 때 이미지 바깥을 채워진 것으로 본다 (닫힘 연산에서 이미지 가장자리 가까운 벽이 깎이지 않게)
+function morph(m, W, H, r, erode, edgeFilled = false) {
   const pass = (src, len, count, at) => {
     const out = new Uint8Array(W * H), k = 2 * r + 1;
     for (let a = 0; a < count; a++) {
@@ -173,7 +197,8 @@ function morph(m, W, H, r, erode) {
       for (let b = -r; b < len + r; b++) {
         if (b + r < len) s += src[at(a, b + r)]; // 창 오른쪽 끝 추가
         if (b - r - 1 >= 0) s -= src[at(a, b - r - 1)]; // 창 왼쪽 끝 제거
-        if (b >= 0 && b < len) out[at(a, b)] = erode ? (s === k ? 1 : 0) : (s > 0 ? 1 : 0);
+        const need = edgeFilled ? Math.min(b + r, len - 1) - Math.max(b - r, 0) + 1 : k; // 창 안에서 이미지 안쪽 칸 수
+        if (b >= 0 && b < len) out[at(a, b)] = erode ? (s === need ? 1 : 0) : (s > 0 ? 1 : 0);
       }
     }
     return out;
@@ -362,7 +387,7 @@ function bridgeWindows(K, light, W, H) {
 // · 외벽 두께: 윤곽에서 안쪽으로 1px 씩 들어가며, 원래 벽이 덮는 비율이 바깥 몇 겹의 절반 아래로 떨어지기 직전까지
 function closeExterior(K, W, H) {
   const S = Math.max(W, H), r = Math.round(S * 0.05), N = W * H;
-  const closed = morph(morph(K, W, H, r, false), W, H, r, true);
+  const closed = morph(morph(K, W, H, r, false), W, H, r, true, true);
   const F = new Uint8Array(N).fill(1), st = new Int32Array(N); let sp = 0;
   const push = i => { if (F[i] && !closed[i]) { F[i] = 0; st[sp++] = i; } };
   for (let x = 0; x < W; x++) { push(x); push((H - 1) * W + x); }
@@ -552,7 +577,7 @@ function apiError(status, m, model, details = []) {
   err.kind = quota ? 'quota' : busy ? 'busy' : '';
   const delay = (details || []).map(d => d && d.retryDelay).find(Boolean); // 예: "37s"
   if (delay) err.retryAfter = Math.ceil(parseFloat(delay));
-  err.daily = quota && /per ?day/i.test(JSON.stringify(details || []) + m); // 하루 한도인지
+  err.daily = quota && (/per ?day/i.test(JSON.stringify(details || []) + m) || err.retryAfter > 600); // 하루 한도인지 (10분 넘게 기다려야 하면 사실상 하루 한도)
   // 단종·미지원 모델이면 Google 이 안내하는 대체 모델을 함께 넘긴다
   if (/no longer available|not found|not supported/i.test(m)) err.suggest = (String(m).match(/models\/(gemini-[\w.-]+)/g) || []).map(x => x.slice(7).replace(/\.+$/, '')).find(x => x !== model) || DEFAULT_MODEL;
   return err;

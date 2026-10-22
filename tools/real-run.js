@@ -35,8 +35,8 @@ const log = (...a) => { const t = a.join(' '); console.log(t); fs.appendFileSync
 
   if (!KEY) { // Gemini 없이 미리보기만
     const t0 = Date.now();
-    const plan = await p.evaluate(async () => { const px = wallMasks(await readPixels(image)); const pl = traceToPlan(autoExtent(px), px); show(pl); return pl; });
-    log('미리보기만 (키 없음):', Date.now() - t0, 'ms · 벽 모양', plan.shapes.length, '· 크기', plan.width, 'x', plan.height);
+    const plan = await p.evaluate(async () => { const px = wallMasks(await readPixels(image)); const pl = traceToPlan(autoExtent(px), px); show(pl); return { ...pl, tone: px.tone }; });
+    log('미리보기만 (키 없음):', Date.now() - t0, 'ms · 벽 색', JSON.stringify(plan.tone), '· 벽 모양', plan.shapes.length, '· 크기', plan.width, 'x', plan.height);
     await p.locator('canvas').screenshot({ path: path.join(outDir, 'preview.png') });
     fs.writeFileSync(path.join(outDir, 'plan.json'), JSON.stringify(plan));
     return b.close();

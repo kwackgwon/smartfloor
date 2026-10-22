@@ -72,7 +72,7 @@ function showNotice(err, partial) {
   const N = {
     busy: ['Google Gemini 서버가 붐벼요', '내 키나 설정 문제가 아니라 Google 쪽이 잠시 바쁜 거예요. 조금 뒤 다시 시도하면 대부분 풀려요. 계속되면 ⚙ Gemini 설정에서 다른 모델을 골라 보세요.', 60],
     quota: err.daily
-      ? ['오늘 쓸 수 있는 사용량을 다 썼어요', `이 API 키의 하루 한도를 넘었어요. 내일 다시 쓰거나, ⚙ Gemini 설정에서 다른 모델을 고르세요 (한도는 모델마다 따로예요). 자주 쓴다면 ${AI_STUDIO}에서 결제를 연결하면 한도가 크게 늘어요.`, 0]
+      ? ['오늘 쓸 수 있는 사용량을 다 썼어요', `이 API 키의 하루 한도를 넘었어요. 한도가 풀린 뒤 다시 쓰거나, ⚙ Gemini 설정에서 다른 모델을 고르세요 (한도는 모델마다 따로예요). 자주 쓴다면 ${AI_STUDIO}에서 결제를 연결하면 한도가 크게 늘어요.`, 0]
       : ['API 키 사용 한도를 넘었어요', `짧은 시간에 요청이 많았어요. 잠시 기다리면 풀려요. 자주 막힌다면 ${AI_STUDIO}에서 남은 사용량을 확인하거나 결제를 연결하세요.`, 60],
     timeout: ['Gemini 응답이 너무 오래 걸렸어요', '도면이 복잡하거나 Google 쪽이 바쁠 때 생겨요. 잠시 뒤 다시 시도해 보세요.', 30]
   }[err.kind];
@@ -83,7 +83,8 @@ function showNotice(err, partial) {
   let left = err.retryAfter || def;
   clearInterval(noticeTimer);
   const tickWait = () => {
-    $('notice-wait').textContent = err.daily && !err.retryAfter ? '' : left > 0 ? `약 ${left}초 뒤 다시 시도하는 걸 권해요` : '지금 다시 시도할 수 있어요';
+    const t = left >= 3600 ? `${Math.floor(left / 3600)}시간 ${Math.floor(left % 3600 / 60)}분` : left >= 60 ? `${Math.floor(left / 60)}분 ${left % 60}초` : `${left}초`;
+    $('notice-wait').textContent = err.daily && !err.retryAfter ? '' : left > 0 ? `약 ${t} 뒤 다시 시도하는 걸 권해요` : '지금 다시 시도할 수 있어요';
     if (left-- <= 0) clearInterval(noticeTimer);
   };
   tickWait(); noticeTimer = setInterval(tickWait, 1000);
