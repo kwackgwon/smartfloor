@@ -357,7 +357,7 @@ function bridgeWindows(K, light, W, H) {
   return res;
 }
 
-// 외벽 닫기: 건물 윤곽(발자국)을 구해, 그 윤곽을 따라 외벽 두께만큼 벽을 깐다 → 입구·문·창문 틈까지 외벽을 모두 닫는다
+// 외벽 닫기: 건물 윤곽(발자국)을 구해, 그 윤곽을 따라 외벽 두께만큼 고른 띠로 벽을 깐다 → 입구·문·창문 틈까지 외벽을 모두 닫는다
 // · 발자국: 벽을 닫힘 연산(긴 변의 10% 이하 틈 메우기)한 뒤, 이미지 테두리에서 닿지 않는 곳 전부
 // · 외벽 두께: 윤곽에서 안쪽으로 1px 씩 들어가며, 원래 벽이 덮는 비율이 바깥 몇 겹의 절반 아래로 떨어지기 직전까지
 function closeExterior(K, W, H) {
@@ -392,6 +392,18 @@ function closeExterior(K, W, H) {
   while (t < MAX && cov(t + 1) >= base * 0.5) t++;
   const out = K.slice();
   for (let i = 0; i < N; i++) if (D[i] && D[i] <= t) out[i] = 1;
+  // 외벽 띠 안쪽으로 얕게 튀어나온 덩어리(기둥 돌출·문틀·자동문 등)는 지워 외벽 안쪽 면을 고르게 한다.
+  // 외벽에서 깊게 들어가는 내부 벽과, 외벽에 붙지 않은 기둥은 그대로 둔다
+  const inner = new Uint8Array(N);
+  for (let i = 0; i < N; i++) if (out[i] && D[i] > t) inner[i] = 1;
+  // 외벽에 붙은 덩어리에서, 외벽 안쪽 얕은 층(깊이 P 이내)은 깊이 들어가는 벽의 뿌리(그 벽에서 P 이내)만 남긴다
+  const P = Math.max(t * 2, Math.round(S * 0.015)), { lab, list } = components(inner, W, H), attached = new Uint8Array(list.length + 1);
+  for (let i = 0; i < N; i++) if (lab[i] && D[i] === t + 1) attached[lab[i]] = 1;
+  const deep = new Uint8Array(N);
+  for (let i = 0; i < N; i++) if (inner[i] && D[i] > t + P) deep[i] = 1;
+  const rv = morph1(deep, W, H, P, true), rh = morph1(deep, W, H, P, false); // 뿌리는 벽 방향(위아래·좌우)으로만, 옆으로 넓히지 않는다
+  const root = new Uint8Array(N); for (let i = 0; i < N; i++) root[i] = rv[i] | rh[i];
+  for (let i = 0; i < N; i++) if (inner[i] && D[i] <= t + P && attached[lab[i]] && !root[i]) out[i] = 0;
   return out;
 }
 
