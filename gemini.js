@@ -7,8 +7,9 @@
 // Gemini 는 건물 영역·벽 위치(0~1000 정규화 좌표)를 알려 줘서 글자·표제란을 걸러 내고 얇은 칸막이·창문 구간을 메운다.
 
 const DEFAULT_MODEL = 'gemini-3.8-flash';
-const IDLE_MS = 60000;   // 스트림에서 이 시간 동안 아무 데이터도 없으면 멈춘 것으로 보고 재시도
-const TOTAL_MS = 240000; // 한 번 요청의 전체 상한
+// 생각 수준이 높으면 Gemini 가 생각하는 동안 1분 넘게 아무 데이터도 보내지 않을 수 있다 → 넉넉히 기다린다
+const IDLE_MS = 180000;  // 스트림에서 이 시간 동안 아무 데이터도 없으면 멈춘 것으로 보고 재시도
+const TOTAL_MS = 300000; // 한 번 요청의 전체 상한
 const API = 'https://generativelanguage.googleapis.com/v1beta/';
 const ver = n => parseFloat((String(n).match(/gemini-([\d.]+)/) || [0, 0])[1]);
 
@@ -83,7 +84,7 @@ async function streamJSON({ key, model, parts, schema, level, onThink = () => {}
     }
     if (!text && finish && finish !== 'STOP') throw new Error(`Gemini 가 도면을 만들지 못했습니다 (${finish}). 다시 시도해 주세요`);
   } catch (e) {
-    if (e.name === 'AbortError' || timedOut) throw Object.assign(new Error('Gemini 응답이 멈춰 시간 초과되었습니다'), { busy: true });
+    if (e.name === 'AbortError' || timedOut) throw Object.assign(new Error('Gemini 응답이 너무 오래 걸려 시간 초과되었습니다'), { busy: true, timeout: true });
     if (e instanceof TypeError) throw new Error('Gemini 에 연결할 수 없습니다 (인터넷 연결 확인)');
     throw e;
   } finally { clearTimeout(idle); clearTimeout(total); }
@@ -119,15 +120,15 @@ ${COORD}
 - 벽이 아닌 것: 책상·의자·책상 칸막이, 변기·싱크대 같은 집기, 문 열림 호, 얇은 치수선, 숫자·글자, 계단, 표제란, 좌석표, 도면 테두리.
 - width_mm: 치수선에 적힌 건물 전체 가로 길이(mm, 가장 바깥 치수). 없으면 0.${o.note ? `\n\n[요청] (이미지에 그려진 것 안에서만 반영한다)\n${o.note}` : ''}`;
 
-// o: 폼 값, image: dataURL, onProgress({ phase: 'think'|'draw'|'refine', count }), onPreview(plan)
-// 정확도가 가장 중요해서 생각(thinking) 수준은 항상 가장 높게(high) 한다. 대신 기다리는 동안
+// o: 폼 값, image: dataURL, onProgress({ phase: 'think'|'draw'|'refine', count }), onPreview(plan), level: 생각 수준
+// 정확도가 가장 중요해서 생각(thinking) 수준은 high 로 시작한다 (시간 초과면 app.js 가 low 로 다시 시도). 기다리는 동안
 // 이미지 픽셀만으로 만든 미리보기를 먼저 보여 주고(1초 안팎), Gemini 답이 오면 최종 도면으로 바꾼다.
 let pxCache = null; // 같은 이미지로 재시도할 때 픽셀 분석을 다시 하지 않는다
-async function generatePlan(o, image, key, model, onProgress = () => {}, onPreview = () => {}) {
+async function generatePlan(o, image, key, model, onProgress = () => {}, onPreview = () => {}, level = 'high') {
   const count = (t, re) => (t.match(re) || []).length;
   const m = image.match(/^data:(image\/(?:png|jpeg|webp));base64,(.+)$/);
   const gem = streamJSON({
-    key, model, level: 'high', schema: WALL_SCHEMA, parts: [{ text: wallPrompt(o) }, { inline_data: { mime_type: m[1], data: m[2] } }],
+    key, model, level, schema: WALL_SCHEMA, parts: [{ text: wallPrompt(o) }, { inline_data: { mime_type: m[1], data: m[2] } }],
     onThink: () => onProgress({ phase: 'think' }), onText: t => onProgress({ phase: 'draw', count: Math.max(0, count(t, /\[/g) - 2) })
   });
   gem.catch(() => {}); // 미리보기를 만드는 동안 실패해도 아래 await 에서 받는다
@@ -147,7 +148,7 @@ async function readPixels(dataURL) {
   return { W: im.width, H: im.height, d: g.getImageData(0, 0, im.width, im.height).data };
 }
 
-// raw: 진한 무채색 또는 빨간색 픽셀 (벽·칸막이 후보, 글자·선 포함)
+// raw: 진한 무채색 또는 빨간색 픽셀 (벽·칸막이 후보, 글자·선 포함), light: 연한 회색 선까지 포함
 // wall: raw 에서 5px 보다 얇은 것(치수선·글자·집기 선)을 지운 것 = 칠해진 벽
 function wallMasks({ W, H, d }) {
   const raw = new Uint8Array(W * H);
@@ -155,7 +156,12 @@ function wallMasks({ W, H, d }) {
     const r = d[4 * i], g = d[4 * i + 1], b = d[4 * i + 2], av = (r + g + b) / 3, ch = Math.max(r, g, b) - Math.min(r, g, b);
     raw[i] = (av < 140 && ch < 50) || (r > 150 && r - g > 45 && r - b > 45) ? 1 : 0;
   }
-  return { W, H, raw, wall: morph(morph(raw, W, H, 2, true), W, H, 2, false) };
+  const light = new Uint8Array(W * H); // 연한 회색 선까지 (창문 선 확인용)
+  for (let i = 0; i < W * H; i++) {
+    const r = d[4 * i], g = d[4 * i + 1], b = d[4 * i + 2];
+    light[i] = raw[i] || ((r + g + b) / 3 < 200 && Math.max(r, g, b) - Math.min(r, g, b) < 50) ? 1 : 0;
+  }
+  return { W, H, raw, light, wall: morph(morph(raw, W, H, 2, true), W, H, 2, false) };
 }
 
 // 정사각형(2r+1) 침식/팽창. 가로·세로로 나눠 창 안의 1 개수를 세서 빠르게 계산
@@ -309,6 +315,62 @@ function snapWall([x1, y1, x2, y2], mask, W, H) {
   return { seg: [ax, ay, bx, by], t: tLen, cov: ok.length / (N + 1) };
 }
 
+// 창문 메우기 (Gemini 없이): 외벽의 창문 구간은 칠해진 벽 사이가 얇은 선 두 줄로 그려져 비어 보인다.
+// 같은 줄에 있는 칠해진 벽 사이 틈(긴 변의 10% 이하)을, 그 틈을 따라 얇은 선이 거의(80%) 이어져 있으면 후보로 메우고,
+// 그중 ① 건물 바깥과 맞닿고 ② 긴 변이 벽에 붙어 있지 않은 것(= 벽 옆을 두껍게 만드는 가짜가 아닌 것)만 받아들인다
+function bridgeWindows(K, light, W, H) {
+  const S = Math.max(W, H), L = Math.round(S * 0.1), R = Math.round(S * 0.012), C = new Uint8Array(W * H);
+  const pass = (vertical) => { // vertical=false: 행마다 가로 틈, true: 열마다 세로 틈
+    const n = vertical ? W : H, len = vertical ? H : W, at = (a, b) => vertical ? b * W + a : a * W + b;
+    const sup = morph1(light, W, H, R, !vertical); // 틈과 수직 방향으로 R 만큼 번진 선
+    for (let a = 0; a < n; a++) {
+      let last = -1;
+      for (let b = 0; b < len; b++) {
+        if (!K[at(a, b)]) continue;
+        if (last >= 0 && b - last > 1 && b - last - 1 <= L) {
+          let c = 0; for (let k = last + 1; k < b; k++) c += sup[at(a, k)];
+          if (c >= (b - last - 1) * 0.8) for (let k = last + 1; k < b; k++) C[at(a, k)] = 1;
+        }
+        last = b;
+      }
+    }
+  };
+  pass(false); pass(true);
+  // 바깥: 이미지 테두리에서 (벽·후보가 아닌 곳으로) 번지는 영역
+  const out = new Uint8Array(W * H), st = new Int32Array(W * H); let sp = 0;
+  const push = i => { if (!out[i] && !K[i] && !C[i]) { out[i] = 1; st[sp++] = i; } };
+  for (let x = 0; x < W; x++) { push(x); push((H - 1) * W + x); }
+  for (let y = 0; y < H; y++) { push(y * W); push(y * W + W - 1); }
+  while (sp) { const i = st[--sp], x = i % W; if (x > 0) push(i - 1); if (x < W - 1) push(i + 1); if (i >= W) push(i - W); if (i < W * (H - 1)) push(i + W); }
+  const near = morph(out, W, H, 3, false), { lab, list } = components(C, W, H), res = K.slice();
+  list.forEach(c => {
+    const bw = c.x1 - c.x0 + 1, bh = c.y1 - c.y0 + 1, horiz = bw >= bh;
+    let touchOut = false, side = 0;
+    for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) {
+      const i = y * W + x; if (lab[i] !== c.id) continue;
+      if (near[i]) touchOut = true;
+      if (horiz ? (y > 0 && K[i - W]) || (y < H - 1 && K[i + W]) : (x > 0 && K[i - 1]) || (x < W - 1 && K[i + 1])) side++;
+    }
+    if (touchOut && side < (horiz ? bw : bh) * 2 * 0.3)
+      for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) if (lab[y * W + x] === c.id) res[y * W + x] = 1;
+  });
+  return res;
+}
+
+// 한 방향(가로 또는 세로)으로만 팽창: vertical=true 면 위아래로 r 만큼
+function morph1(m, W, H, r, vertical) {
+  const out = new Uint8Array(W * H), n = vertical ? W : H, len = vertical ? H : W, at = (a, b) => vertical ? b * W + a : a * W + b;
+  for (let a = 0; a < n; a++) {
+    let s = 0;
+    for (let b = -r; b < len + r; b++) {
+      if (b + r < len) s += m[at(a, b + r)];
+      if (b - r - 1 >= 0) s -= m[at(a, b - r - 1)];
+      if (b >= 0 && b < len) out[at(a, b)] = s > 0 ? 1 : 0;
+    }
+  }
+  return out;
+}
+
 // 벽 선분의 끝이 다른 벽 가까이에서 끝나면(모서리·T자), 그 벽의 바깥 면에 정확히 닿게 맞춘다
 // → 끝이 모자라 생기는 틈도, 넘쳐서 튀어나오는 부분도 없앤다. 다른 벽과 만나지 않는 끝은 그대로 둔다
 function joinEnds(segs) {
@@ -373,8 +435,9 @@ function traceToPlan(w, P) {
   const { lab, list } = P.comp, keepId = new Uint8Array(list.length + 1);
   const minArea = (S * 0.007) ** 2, minDim = S * 0.008;
   list.forEach(c => { if (c.area >= minArea && Math.max(c.x1 - c.x0, c.y1 - c.y0) >= minDim && inEx((c.x0 + c.x1) / 2, (c.y0 + c.y1) / 2)) keepId[c.id] = 1; });
-  const K = new Uint8Array(W * H);
-  for (let i = 0; i < W * H; i++) if (lab[i] && keepId[lab[i]]) K[i] = 1;
+  const K0 = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) if (lab[i] && keepId[lab[i]]) K0[i] = 1;
+  const K = bridgeWindows(K0, P.light, W, H); // 외벽 창문 구간 메우기
 
   // 2. Gemini 벽 선분: 칠해진 벽에 맞추고(창문 구간 등 메우기), 안 되면 얇은 선에 맞춘다(얇은 칸막이). 근거 픽셀이 없으면 버린다
   const segs = [];
@@ -397,11 +460,10 @@ function traceToPlan(w, P) {
   const cx = v => Math.round((v - x0) * k * 10) / 10, cy = v => Math.round((v - y0) * k * 10) / 10;
 
   // 4. 칠해진 벽 → 다각형(구멍 포함). 덩어리마다 하나의 모양으로 묶는다 (지우개로 한 번에 지울 수 있게)
-  const shapes = [];
-  list.forEach(c => {
-    if (!keepId[c.id]) return;
+  const shapes = [], K2 = components(K, W, H);
+  K2.list.forEach(c => {
     const bw = c.x1 - c.x0 + 1, bh = c.y1 - c.y0 + 1, sub = new Uint8Array(bw * bh);
-    for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) if (lab[y * W + x] === c.id) sub[(y - c.y0) * bw + x - c.x0] = 1;
+    for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) if (K2.lab[y * W + x] === c.id) sub[(y - c.y0) * bw + x - c.x0] = 1;
     const loops = traceLoops(sub, bw, bh).map(l => orthogonalize(simplifyLoop(l, 2))).filter(l => l.length >= 3)
       .map(l => l.map(([x, y]) => [cx(x + c.x0), cy(y + c.y0)]));
     if (loops.length) shapes.push(loops);

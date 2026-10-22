@@ -89,32 +89,40 @@ form.onsubmit = async e => {
   const onPreview = p => { preview = true; show(p); status(); };
   const tick = setInterval(status, 1000); status();
   try {
-    // 일시 오류(사용량 폭주 등)면 기다렸다 재시도 → 그래도 안 되면 다른 flash 모델로, 단종 모델이면 안내된 모델로 시도
+    // 재시도 규칙 (최대 3번):
+    //  · 시간 초과 → 같은 모델, 생각 수준 low 로 (빠르게)
+    //  · 사용량 폭주 등 일시 오류 → 잠시 기다렸다 다른 flash 모델로 (없으면 같은 모델)
+    //  · 단종 모델 → Google 이 안내한 모델로
     const other = [...$('models').options].map(o => o.value).find(n => n !== model && n.endsWith('-flash'));
-    const tries = [model, ...(other ? [other] : []), model].slice(0, 3); // 최대 3번 시도
-    let d, last;
-    for (let i = 0; i < tries.length && !d; i++) {
-      try { d = await generatePlan(f, image, key, tries[i], onProgress, onPreview); }
+    let d, last, cur = { model, level: 'high' };
+    for (let i = 0; i < 3 && !d; i++) {
+      try { d = await generatePlan(f, image, key, cur.model, onProgress, onPreview, cur.level); }
       catch (err) {
         last = err;
-        if (err.suggest && !tries.includes(err.suggest)) tries.splice(i + 1, 0, err.suggest);
-        else if (!err.busy) throw err;
-        const next = tries[i + 1];
-        if (!next) break;
-        pre = next === tries[i] ? `재시도 ${i + 2}/${tries.length} · ` : `${next} 로 재시도 ${i + 2}/${tries.length} · `;
+        if (!err.busy && !err.suggest) throw err;
+        if (i === 2 || (err.timeout && cur.level === 'low')) break; // 빠르게 해도 시간 초과면 더 기다리지 않는다
+        const next = err.suggest ? { model: err.suggest, level: cur.level }
+          : err.timeout ? { model: cur.model, level: 'low' }
+          : { model: other && cur.model !== other ? other : cur.model, level: cur.level };
+        pre = `${next.model !== cur.model ? next.model + ' 로 ' : ''}${next.level !== cur.level ? '빠르게 ' : ''}재시도 ${i + 2}/3 · `;
         stage = '대기 중'; status();
-        if (!err.suggest) await new Promise(r => setTimeout(r, 3000 * (i + 1)));
-        stage = base;
+        if (!err.suggest && !err.timeout) await new Promise(r => setTimeout(r, 3000 * (i + 1)));
+        stage = base; cur = next;
       }
-      if (d && tries[i] !== model) { $('model').value = tries[i]; saveSettings(); }
+      if (d && cur.model !== model) { $('model').value = cur.model; saveSettings(); }
     }
     if (!d) throw last;
     show(d); save();
     say(`도면 생성 완료 · ${Math.round((Date.now() - t0) / 1000)}초`);
   } catch (err) {
     $('loading').hidden = true;
-    if (plan) cvs.hidden = false; else $('empty').hidden = false;
-    say(preview ? `Gemini 보정 실패 — 미리보기 도면만 표시 (${err.message})` : err.message, 'chip err');
+    if (preview) { // 미리보기(이미지 분석 결과)도 쓸 만한 도면이므로 그것으로 마무리한다
+      cvs.hidden = false; save();
+      say(`이미지 분석만으로 완성 · Gemini 보정 실패 (${err.message})`, 'chip');
+    } else {
+      if (plan) cvs.hidden = false; else $('empty').hidden = false;
+      say(err.message, 'chip err');
+    }
   } finally { clearInterval(tick); btn.disabled = false; }
 };
 
