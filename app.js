@@ -92,7 +92,7 @@ function showNotice(err, who) {
     if (left-- <= 0) clearInterval(noticeTimer);
   };
   tickWait(); noticeTimer = setInterval(tickWait, 1000);
-  $('notice').hidden = false;
+  $('notice').hidden = false; $('ai').open = true;
 }
 const hideNotice = () => { clearInterval(noticeTimer); $('notice').hidden = true; };
 $('retry').onclick = () => refine();

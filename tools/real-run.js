@@ -37,7 +37,7 @@ const log = (...a) => { const t = a.join(' '); console.log(t); fs.appendFileSync
 
   if (GKEY || ORKEY) {
     const t1 = Date.now();
-    await p.click('#refine');
+    await p.evaluate(() => { document.querySelector('#ai').open = true; }); await p.click('#refine');
     while (await p.isDisabled('#refine')) {
       await p.waitForTimeout(2000); log(`  ${((Date.now() - t1) / 1000).toFixed(0)}s`, await p.textContent('#msg'));
       if (Date.now() - t1 > 900000) { log('15분 초과, 중단'); break; }

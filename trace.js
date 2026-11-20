@@ -295,6 +295,58 @@ function closeExterior(K, W, H) {
   const rv = morph1(deep, W, H, P, true), rh = morph1(deep, W, H, P, false); // 뿌리는 벽 방향(위아래·좌우)으로만, 옆으로 넓히지 않는다
   const root = new Uint8Array(N); for (let i = 0; i < N; i++) root[i] = rv[i] | rh[i];
   for (let i = 0; i < N; i++) if (inner[i] && D[i] <= t + P && attached[lab[i]] && !root[i]) out[i] = 0;
+  out.F = F; // 건물 발자국 (얇은 벽 찾기에서 건물 안쪽 판정에 쓴다)
+  return out;
+}
+
+// 얇은 벽 찾기 (AI 없이): 칠해진 벽 마스크는 5px 보다 얇은 것을 지우므로, 얇은 선으로 그린 칸막이가 빠진다. 그중 벽인 것만 되살린다
+// ① 칠해진 벽을 뺀 벽 색 선 중 곧은 가로·세로 선 (이미지 긴 변의 4% 이상) ② 건물 안 ③ 한쪽 끝이 벽(또는 이미 찾은 얇은 벽)에 닿음
+// ④ 짧은 선이 촘촘히 반복되는 무리(계단 디딤판 등)는 뺀다 ⑤ 두 줄로 그린 벽은 사이를 메워 한 벽으로 만들고, 잘 보이게 조금 두껍게 한다
+function thinWalls(K, raw, F, W, H) {
+  const S = Math.max(W, H), N = W * H, Lr = Math.round(S * 0.02), near = morph(K, W, H, 2, false);
+  const thin = new Uint8Array(N);
+  for (let i = 0; i < N; i++) thin[i] = raw[i] && !near[i] && F && F[i] ? 1 : 0;
+  // 가로·세로로 Lr*2+1 이상 이어진 선만 (한 방향 열림)
+  const open1 = vertical => { const e = new Uint8Array(N), n = vertical ? W : H, len = vertical ? H : W, at = (a, b) => vertical ? b * W + a : a * W + b;
+    for (let a = 0; a < n; a++) { let run = 0; for (let b = 0; b <= len; b++) { if (b < len && thin[at(a, b)]) { run++; continue; }
+      if (run >= 2 * Lr + 1) for (let k = b - run; k < b; k++) e[at(a, k)] = 1; run = 0; } }
+    return e; };
+  // 가로선·세로선은 따로 덩어리로 묶는다 (ㄱ자로 만나면 한 덩어리가 되어 '얇은 선' 판정에서 빠지므로)
+  const maxT = Math.max(6, Math.round(S * 0.004)), cand = [];
+  for (const vertical of [false, true]) {
+    const { lab, list } = components(open1(vertical), W, H);
+    for (const c of list) if ((vertical ? c.x1 - c.x0 : c.y1 - c.y0) + 1 <= maxT) cand.push({ ...c, lab, h: !vertical }); // 곧은 얇은 선만
+  }
+  // ④ 계단 같은 무리: 길이가 비슷하고 서로 겹치게 나란한 선이 4개 이상이고, 간격이 길이의 35% 보다 좁으면 뺀다
+  const len = c => c.h ? c.x1 - c.x0 : c.y1 - c.y0, pos = c => c.h ? (c.y0 + c.y1) / 2 : (c.x0 + c.x1) / 2;
+  const span = c => c.h ? [c.x0, c.x1] : [c.y0, c.y1], drop = new Set();
+  for (const c of cand) {
+    const grp = cand.filter(d => d.h === c.h && Math.abs(len(d) - len(c)) <= len(c) * 0.15
+      && Math.min(span(c)[1], span(d)[1]) - Math.max(span(c)[0], span(d)[0]) >= len(c) * 0.8).sort((a, b) => pos(a) - pos(b));
+    if (grp.length < 4) continue;
+    const gaps = grp.slice(1).map((d, i) => pos(d) - pos(grp[i])).sort((a, b) => a - b);
+    if (gaps[gaps.length >> 1] < len(c) * 0.35) grp.forEach(d => drop.add(d));
+  }
+  // ③ 벽에 닿은 것부터, 닿은 얇은 벽을 거쳐 이어지는 것까지 (최대 3번)
+  const nearK = morph(K, W, H, 3, false), acc = new Set(), paint = (c, m) => {
+    for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) if (c.lab[y * W + x] === c.id) m[y * W + x] = 1; };
+  const touches = (c, m) => {
+    for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) if (c.lab[y * W + x] === c.id && m[y * W + x]) return true;
+    return false; };
+  let M = nearK;
+  for (let pass = 0; pass < 3; pass++) {
+    let grew = false;
+    for (const c of cand) if (!acc.has(c) && !drop.has(c) && touches(c, M)) { acc.add(c); grew = true; }
+    if (!grew) break;
+    const got = new Uint8Array(N); acc.forEach(c => paint(c, got));
+    const g2 = morph(got, W, H, 3, false); M = new Uint8Array(N); for (let i = 0; i < N; i++) M[i] = nearK[i] | g2[i];
+  }
+  const A = new Uint8Array(N); acc.forEach(c => paint(c, A));
+  // ⑤ 두 줄 벽 메우기(닫힘) + 최소 두께
+  const r = Math.max(4, Math.round(S * 0.005)), thick = Math.max(1, Math.round(S * 0.0015));
+  const closedA = morph(morph(A, W, H, r, false), W, H, r, true), wide = morph(closedA, W, H, thick, false), out = K.slice();
+  for (let i = 0; i < N; i++) if (wide[i] && F[i]) out[i] = 1;
+  out.F = F;
   return out;
 }
 
@@ -379,7 +431,8 @@ function traceToPlan(w, P, widthM = 0) {
   list.forEach(c => { if (c.area >= minArea && Math.max(c.x1 - c.x0, c.y1 - c.y0) >= minDim && inEx((c.x0 + c.x1) / 2, (c.y0 + c.y1) / 2)) keepId[c.id] = 1; });
   const K0 = new Uint8Array(W * H);
   for (let i = 0; i < W * H; i++) if (lab[i] && keepId[lab[i]]) K0[i] = 1;
-  const K = closeExterior(bridgeWindows(K0, P.light, W, H), W, H); // 외벽 창문 구간 메우기 → 외벽 전부 닫기
+  const KE = closeExterior(bridgeWindows(K0, P.light, W, H), W, H); // 외벽 창문 구간 메우기 → 외벽 전부 닫기
+  const K = thinWalls(KE, P.raw, KE.F, W, H); // 얇은 칸막이 벽 더하기 (AI 없이)
 
   // 2. Gemini 벽 선분: 칠해진 벽에 맞추고(창문 구간 등 메우기), 안 되면 얇은 선에 맞춘다(얇은 칸막이). 근거 픽셀이 없으면 버린다
   const segs = [];

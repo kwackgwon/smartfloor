@@ -58,8 +58,11 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .panel label.inline input { flex: 1; }
 .note.center { text-align: center; margin-top: -8px; }
 .ai { border-top: 1px solid var(--line); padding-top: 14px; display: flex; flex-direction: column; gap: 10px; }
-.ai h2 { margin: 0; font-size: 15px; }
-.ai h2 small { font-weight: 400; font-size: 12px; color: var(--muted); }
+.ai > summary { cursor: pointer; font-size: 14px; font-weight: 600; list-style: none; }
+.ai > summary::-webkit-details-marker { display: none; }
+.ai > summary::before { content: '▸ '; color: var(--muted); }
+.ai[open] > summary::before { content: '▾ '; }
+.ai > summary small { font-weight: 400; font-size: 12px; color: var(--muted); }
 .ghost.big { padding: 10px 14px; font-weight: 600; }
 
 /* 오류 안내 */

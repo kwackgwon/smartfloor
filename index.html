@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SmartFloor</title>
-  <link rel="stylesheet" href="style.css?v=10">
+  <link rel="stylesheet" href="style.css?v=11">
 </head>
 <body>
   <header class="top">
@@ -35,15 +35,15 @@
       <section class="step">
         <h2><span class="num">2</span>건물 가로 길이 <small>선택</small></h2>
         <label class="inline"><input name="widthM" type="number" min="1" max="200" step="0.1" placeholder="예) 15.1"><span>m</span></label>
-        <p class="note">실제 크기(cm)를 맞추는 데 써요. 비워 두면 AI 가 도면 치수를 읽거나, AI 없이는 15m 로 가정해요.</p>
+        <p class="note">실제 크기(cm)를 맞추는 데 써요. 비워 두면 가로 15m 로 가정해요.</p>
       </section>
 
       <button class="primary big" id="gen">도면 생성</button>
-      <p class="note center">AI 없이 이미지만 분석해요 · 무료 · 키 필요 없음</p>
+      <p class="note center">이미지만 분석해서 1~2초 · 무료 · 키 필요 없음</p>
 
-      <section class="ai">
-        <h2>AI로 다듬기 <small>선택</small></h2>
-        <p class="note">AI 가 얇은 칸막이를 보완하고 도면 치수를 읽어요. 무료 AI 는 하루 사용 한도가 있어요.</p>
+      <details class="ai" id="ai">
+        <summary>AI로 다듬기 <small>선택 · 느림 (수십 초~몇 분)</small></summary>
+        <p class="note">보통은 필요 없어요. 도면 생성 결과에 빠진 벽이 있을 때 AI 에게 한 번 더 보게 해요. 무료 AI 는 하루 사용 한도가 있어요.</p>
         <textarea name="note" rows="2" placeholder="요청 사항 (선택) 예) 오른쪽 아래 창고 벽은 빼 주세요"></textarea>
         <button type="button" class="ghost big" id="refine">AI로 다듬기</button>
 
@@ -68,7 +68,7 @@
           <label>OpenRouter 모델 <small>비우면 무료 비전 모델 자동 선택</small><input id="or-model" list="or-models" placeholder="자동 (…:free)"></label>
           <datalist id="or-models"></datalist>
         </details>
-      </section>
+      </details>
     </form>
 
     <section class="card view">
@@ -92,9 +92,9 @@
   </main>
 
   <!-- ?v= 는 배포할 때마다 올린다 (브라우저가 예전 파일을 쓰지 않게) -->
-  <script src="trace.js?v=10"></script>
-  <script src="gemini.js?v=10"></script>
-  <script src="openrouter.js?v=10"></script>
-  <script src="app.js?v=10"></script>
+  <script src="trace.js?v=11"></script>
+  <script src="gemini.js?v=11"></script>
+  <script src="openrouter.js?v=11"></script>
+  <script src="app.js?v=11"></script>
 </body>
 </html>
