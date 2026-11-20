@@ -248,19 +248,9 @@ function bridgeWindows(K, light, W, H) {
   return res;
 }
 
-// 외벽 닫기: 건물 윤곽(발자국)을 구해, 그 윤곽을 따라 외벽 두께만큼 고른 띠로 벽을 깐다 → 입구·문·창문 틈까지 외벽을 모두 닫는다
-// · 발자국: 벽을 닫힘 연산(긴 변의 10% 이하 틈 메우기)한 뒤, 이미지 테두리에서 닿지 않는 곳 전부
-// · 외벽 두께: 윤곽에서 안쪽으로 1px 씩 들어가며, 원래 벽이 덮는 비율이 바깥 몇 겹의 절반 아래로 떨어지기 직전까지
-function closeExterior(K, W, H) {
-  const S = Math.max(W, H), r = Math.round(S * 0.05), N = W * H;
-  const closed = morph(morph(K, W, H, r, false), W, H, r, true, true);
-  const F = new Uint8Array(N).fill(1), st = new Int32Array(N); let sp = 0;
-  const push = i => { if (F[i] && !closed[i]) { F[i] = 0; st[sp++] = i; } };
-  for (let x = 0; x < W; x++) { push(x); push((H - 1) * W + x); }
-  for (let y = 0; y < H; y++) { push(y * W); push(y * W + W - 1); }
-  while (sp) { const i = st[--sp], x = i % W; if (x > 0) push(i - 1); if (x < W - 1) push(i + 1); if (i >= W) push(i - W); if (i < N - W) push(i + W); }
-  // 바깥까지 거리 (체스판 거리, 2번 훑기)
-  const D = new Int32Array(N), INF = 1 << 29;
+// 바깥(F=0)까지 거리 (체스판 거리, 2번 훑기). 바깥은 0, 이미지 테두리 밖도 바깥으로 본다
+function distOut(F, W, H) {
+  const N = W * H, D = new Int32Array(N), INF = 1 << 29;
   for (let i = 0; i < N; i++) D[i] = F[i] ? INF : 0;
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const i = y * W + x; if (!D[i]) continue;
@@ -276,6 +266,21 @@ function closeExterior(K, W, H) {
     if (y < H - 1) { m = Math.min(m, D[i + W] + 1); if (x < W - 1) m = Math.min(m, D[i + W + 1] + 1); if (x > 0) m = Math.min(m, D[i + W - 1] + 1); } else m = 1;
     D[i] = m;
   }
+  return D;
+}
+
+// 외벽 닫기: 건물 윤곽(발자국)을 구해, 그 윤곽을 따라 외벽 두께만큼 고른 띠로 벽을 깐다 → 입구·문·창문 틈까지 외벽을 모두 닫는다
+// · 발자국: 벽을 닫힘 연산(긴 변의 10% 이하 틈 메우기)한 뒤, 이미지 테두리에서 닿지 않는 곳 전부
+// · 외벽 두께: 윤곽에서 안쪽으로 1px 씩 들어가며, 원래 벽이 덮는 비율이 바깥 몇 겹의 절반 아래로 떨어지기 직전까지
+function closeExterior(K, W, H) {
+  const S = Math.max(W, H), r = Math.round(S * 0.05), N = W * H;
+  const closed = morph(morph(K, W, H, r, false), W, H, r, true, true);
+  const F = new Uint8Array(N).fill(1), st = new Int32Array(N); let sp = 0;
+  const push = i => { if (F[i] && !closed[i]) { F[i] = 0; st[sp++] = i; } };
+  for (let x = 0; x < W; x++) { push(x); push((H - 1) * W + x); }
+  for (let y = 0; y < H; y++) { push(y * W); push(y * W + W - 1); }
+  while (sp) { const i = st[--sp], x = i % W; if (x > 0) push(i - 1); if (x < W - 1) push(i + 1); if (i >= W) push(i - W); if (i < N - W) push(i + W); }
+  const D = distOut(F, W, H), INF = 1 << 29;
   const MAX = Math.round(S * 0.03), tot = new Float64Array(MAX + 2), hit = new Float64Array(MAX + 2);
   for (let i = 0; i < N; i++) if (D[i] && D[i] <= MAX + 1) { tot[D[i]]++; if (K[i]) hit[D[i]]++; }
   const cov = d => tot[d] ? hit[d] / tot[d] : 0, base = (cov(1) + cov(2) + cov(3)) / 3;
@@ -295,7 +300,7 @@ function closeExterior(K, W, H) {
   const rv = morph1(deep, W, H, P, true), rh = morph1(deep, W, H, P, false); // 뿌리는 벽 방향(위아래·좌우)으로만, 옆으로 넓히지 않는다
   const root = new Uint8Array(N); for (let i = 0; i < N; i++) root[i] = rv[i] | rh[i];
   for (let i = 0; i < N; i++) if (inner[i] && D[i] <= t + P && attached[lab[i]] && !root[i]) out[i] = 0;
-  out.F = F; // 건물 발자국 (얇은 벽 찾기에서 건물 안쪽 판정에 쓴다)
+  out.F = F; out.t = t; // 건물 발자국·외벽 두께 (얇은 벽 찾기·단순화에서 쓴다)
   return out;
 }
 
@@ -350,6 +355,85 @@ function thinWalls(K, raw, F, W, H) {
   return out;
 }
 
+// 다각형 채우기 (짝홀 규칙, 픽셀 중심 기준)
+function fillPolygon(loop, W, H) {
+  const m = new Uint8Array(W * H), n = loop.length;
+  for (let y = 0; y < H; y++) {
+    const yc = y + 0.5, xs = [];
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const [xi, yi] = loop[i], [xj, yj] = loop[j];
+      if ((yi > yc) !== (yj > yc)) xs.push(xi + (yc - yi) * (xj - xi) / (yj - yi));
+    }
+    xs.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < xs.length; k += 2)
+      for (let x = Math.max(0, Math.ceil(xs[k] - 0.5)); x <= Math.min(W - 1, Math.floor(xs[k + 1] - 0.5)); x++) m[y * W + x] = 1;
+  }
+  return m;
+}
+
+// 좌석 도면처럼 벽을 단순화한다 (건축 디테일 없이, 같은 두께·직각)
+// · 외벽: 건물 윤곽을 크게 단순화(직선·직각)한 다각형을 따라 고른 두께의 띠
+// · 내부 벽: 가로·세로 막대로 나눠 모두 같은 두께(중앙값)로, 거의 한 줄인 벽은 한 줄로 맞춘다
+// · 외벽에 붙지 않은 작은 덩어리(기둥)는 네모로, 막대로 나뉘지 않는 덩어리(사선 벽 등)는 모양 그대로
+// 반환: { ring: 외벽 마스크, bars: [{ seg: [x1,y1,x2,y2], t }], blobs: 마스크, F2: 단순화한 발자국 }
+function schematize(K, F, tExt, W, H) {
+  const S = Math.max(W, H), N = W * H;
+  // 1. 발자국 윤곽 단순화 → 다시 채우기
+  const loops = traceLoops(F, W, H).sort((a, b) => b.length - a.length);
+  const outline = orthogonalize(simplifyLoop(loops[0], Math.max(3, S * 0.006)));
+  const F2 = fillPolygon(outline, W, H), D = distOut(F2, W, H);
+  const ring = new Uint8Array(N), I = new Uint8Array(N);
+  for (let i = 0; i < N; i++) { if (F2[i] && D[i] <= tExt) ring[i] = 1; else if (K[i] && F2[i]) I[i] = 1; }
+  // 2. 내부 벽: 픽셀마다 가로·세로로 이어진 길이를 재서 더 긴 쪽(2배 이상) 막대로 나눈다
+  const runH = new Int32Array(N), runV = new Int32Array(N);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W;) { if (!I[y * W + x]) { x++; continue; } let e = x; while (e < W && I[y * W + e]) e++; for (let k = x; k < e; k++) runH[y * W + k] = e - x; x = e; }
+  for (let x = 0; x < W; x++) for (let y = 0; y < H;) { if (!I[y * W + x]) { y++; continue; } let e = y; while (e < H && I[e * W + x]) e++; for (let k = y; k < e; k++) runV[k * W + x] = e - y; y = e; }
+  const hb = new Uint8Array(N), vb = new Uint8Array(N);
+  for (let i = 0; i < N; i++) if (I[i]) { if (runH[i] >= runV[i] * 2) hb[i] = 1; else if (runV[i] >= runH[i] * 2) vb[i] = 1; }
+  const bars = [];
+  for (const [m, horiz] of [[hb, true], [vb, false]]) {
+    const { lab, list } = components(m, W, H);
+    for (const c of list) {
+      const len = horiz ? c.x1 - c.x0 + 1 : c.y1 - c.y0 + 1, t = horiz ? c.y1 - c.y0 + 1 : c.x1 - c.x0 + 1;
+      if (len < t * 2 || len < S * 0.01) continue; // 뭉툭한 조각(돌출·문틀)은 벽이 아니다
+      let sum = 0, n = 0; // 중심선: 픽셀 평균 위치
+      for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) if (lab[y * W + x] === c.id) { sum += horiz ? y : x; n++; }
+      const mid = sum / n + 0.5;
+      bars.push({ seg: horiz ? [c.x0, mid, c.x1 + 1, mid] : [mid, c.y0, mid, c.y1 + 1], t, t0: t, horiz }); // t0: 원래 두께
+    }
+  }
+  // 3. 같은 두께 (길이 가중 중앙값), 거의 한 줄인 막대는 한 줄로
+  const ts = bars.flatMap(b => Array(Math.max(1, Math.round(Math.hypot(b.seg[2] - b.seg[0], b.seg[3] - b.seg[1]) / 10))).fill(b.t)).sort((a, b) => a - b);
+  const tInt = Math.min(tExt, Math.max(3, Math.round(S * 0.004), ts.length ? ts[ts.length >> 1] : tExt * 0.6));
+  bars.forEach(b => { b.t = tInt; });
+  for (const horiz of [true, false]) {
+    const k = horiz ? 1 : 0, grp = bars.filter(b => b.horiz === horiz).sort((a, b) => a.seg[k] - b.seg[k]);
+    for (let i = 0; i < grp.length;) {
+      let j = i; while (j + 1 < grp.length && grp[j + 1].seg[k] - grp[j].seg[k] <= tInt * 0.75) j++;
+      const v = grp.slice(i, j + 1).reduce((a, b) => a + b.seg[k], 0) / (j - i + 1);
+      for (let q = i; q <= j; q++) { grp[q].seg[k] = v; grp[q].seg[k + 2] = v; }
+      i = j + 1;
+    }
+  }
+  joinEnds(bars); // 막대 끝을 만나는 벽의 바깥 면에 맞춘다 (외벽 띠와는 이미 맞닿아 있다)
+  // 4. 막대로 덮이지 않은 덩어리: 작고 꽉 찬 것은 기둥(네모), 큰 것은 모양 그대로 (사선 벽 등)
+  const cover = new Uint8Array(N); // 막대가 원래 차지하던 자리 (원래 두께 기준: 얇게 다시 그린 벽의 양옆 띠가 찌꺼기로 남지 않게)
+  for (const b of bars) {
+    const [x1, y1, x2, y2] = b.seg, r = Math.ceil(Math.max(b.t0, b.t) / 2) + 2;
+    for (let y = Math.floor(Math.min(y1, y2) - r); y <= Math.ceil(Math.max(y1, y2) + r); y++) for (let x = Math.floor(Math.min(x1, x2) - r); x <= Math.ceil(Math.max(x1, x2) + r); x++)
+      if (x >= 0 && y >= 0 && x < W && y < H) cover[y * W + x] = 1;
+  }
+  const rest = new Uint8Array(N); for (let i = 0; i < N; i++) rest[i] = I[i] && !cover[i] ? 1 : 0;
+  const blobs = new Uint8Array(N), R = components(rest, W, H);
+  for (const c of R.list) {
+    const bw = c.x1 - c.x0 + 1, bh = c.y1 - c.y0 + 1;
+    if (c.area < (tInt * 1.5) ** 2) continue; // 작은 찌꺼기
+    const square = Math.max(bw, bh) <= tExt * 3 && c.area >= bw * bh * 0.6;
+    for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) if (square || R.lab[y * W + x] === c.id) blobs[y * W + x] = 1;
+  }
+  return { ring, bars, blobs, F2 };
+}
+
 // 한 방향(가로 또는 세로)으로만 팽창: vertical=true 면 위아래로 r 만큼
 function morph1(m, W, H, r, vertical) {
   const out = new Uint8Array(W * H), n = vertical ? W : H, len = vertical ? H : W, at = (a, b) => vertical ? b * W + a : a * W + b;
@@ -383,7 +467,7 @@ function joinEnds(segs) {
         const t = ((a - px) * vy - (b - py) * vx) / cross; // 이 선분 방향으로 t 만큼 가면 다른 벽 중심선
         const q = ((px + ux * t - a) * vx + (py + uy * t - b) * vy); // 다른 벽 위의 위치 (0~M)
         const reach = Math.max(r.t, o.t) * 1.5 + 3;
-        if (Math.abs(t) > reach || q < -o.t || q > M + o.t) return;
+        if (Math.abs(t) > reach || q < -reach || q > M + reach) return; // 교점이 두 벽 모두에서 가까워야 모서리·T자
         if (!best || Math.abs(t) < Math.abs(best.t)) best = { t, o, sin: Math.abs(cross) };
       });
       if (!best) return;
@@ -434,38 +518,42 @@ function traceToPlan(w, P, widthM = 0) {
   const KE = closeExterior(bridgeWindows(K0, P.light, W, H), W, H); // 외벽 창문 구간 메우기 → 외벽 전부 닫기
   const K = thinWalls(KE, P.raw, KE.F, W, H); // 얇은 칸막이 벽 더하기 (AI 없이)
 
-  // 2. Gemini 벽 선분: 칠해진 벽에 맞추고(창문 구간 등 메우기), 안 되면 얇은 선에 맞춘다(얇은 칸막이). 근거 픽셀이 없으면 버린다
+  // 2. 좌석 도면처럼 단순화: 외벽 띠 + 같은 두께의 내부 벽 막대 + 기둥
+  const SC = schematize(K, KE.F, KE.t, W, H), tInt = SC.bars.length ? SC.bars[0].t : Math.max(3, Math.round(KE.t * 0.6));
+
+  // 3. AI 벽 선분: 실제 벽 픽셀에 맞추고, 이미 있는 벽이 덮고 있으면 버린다. 남은 것(빠진 칸막이)만 같은 두께 막대로 더한다
   const segs = [];
   for (const l of lines) {
     if (!inEx((l[0] + l[2]) / 2, (l[1] + l[3]) / 2)) continue;
     let r = snapWall(l, K, W, H);
-    if (r.cov >= 0.85) continue; // 이미 칠해진 벽 모양이 덮고 있으면 선은 필요 없다
-    if (r.cov < 0.35) { r = snapWall(l, raw, W, H); if (r.cov < 0.5) continue; r.t = Math.max(r.t, S * 0.004); }
-    segs.push(r);
+    if (r.cov >= 0.85) continue;
+    if (r.cov < 0.35) { r = snapWall(l, raw, W, H); if (r.cov < 0.5) continue; }
+    segs.push({ seg: r.seg, t: tInt });
   }
-  joinEnds(segs);
+  const bars = SC.bars.concat(segs);
+  if (segs.length) joinEnds(bars);
 
-  // 3. 범위·축척: 남은 벽 픽셀과 선분이 차지하는 범위 = 건물 외곽
+  // 4. 범위·축척: 단순화한 건물 발자국 = 건물 외곽
   let x0 = W, y0 = H, x1 = 0, y1 = 0;
-  for (let i = 0; i < W * H; i++) if (K[i]) { const x = i % W, y = (i - x) / W; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
-  segs.forEach(({ seg, t }) => { x0 = Math.min(x0, seg[0] - t / 2, seg[2] - t / 2); x1 = Math.max(x1, seg[0] + t / 2, seg[2] + t / 2); y0 = Math.min(y0, seg[1] - t / 2, seg[3] - t / 2); y1 = Math.max(y1, seg[1] + t / 2, seg[3] + t / 2); });
+  for (let i = 0; i < W * H; i++) if (SC.F2[i]) { const x = i % W, y = (i - x) / W; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
   if (x1 <= x0 || y1 <= y0) throw Object.assign(new Error('도면에서 벽을 찾지 못했습니다. 다시 시도하거나 더 선명한 도면을 올려 주세요'), { busy: true });
   // 축척: 입력한 가로 길이(m) > AI 가 읽은 도면 치수(mm) > 가로 15m 가정
   const realW = +widthM > 0 ? +widthM * 100 : +w.width_mm > 500 ? +w.width_mm / 10 : 1500, k = realW / (x1 - x0 + 1);
   const cx = v => Math.round((v - x0) * k * 10) / 10, cy = v => Math.round((v - y0) * k * 10) / 10;
 
-  // 4. 칠해진 벽 → 다각형(구멍 포함). 덩어리마다 하나의 모양으로 묶는다 (지우개로 한 번에 지울 수 있게)
-  const shapes = [], K2 = components(K, W, H);
-  K2.list.forEach(c => {
-    const bw = c.x1 - c.x0 + 1, bh = c.y1 - c.y0 + 1, sub = new Uint8Array(bw * bh);
-    for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) if (K2.lab[y * W + x] === c.id) sub[(y - c.y0) * bw + x - c.x0] = 1;
-    const loops = traceLoops(sub, bw, bh).map(l => orthogonalize(simplifyLoop(l, 2))).filter(l => l.length >= 3)
-      .map(l => l.map(([x, y]) => [cx(x + c.x0), cy(y + c.y0)]));
-    if (loops.length) shapes.push(loops);
-  });
-
-  // 선 벽의 끝점은 픽셀에서 벽이 끝나는 곳에 맞췄으므로 수평·수직만 편다
-  const walls = segs.map(({ seg, t }) => straighten([cx(seg[0]), cy(seg[1]), cx(seg[2]), cy(seg[3]), Math.max(4, Math.round(t * k))]));
+  // 5. 외벽 띠·기둥·사선 벽 → 다각형 (구멍 포함), 내부 벽 막대 → 선 벽
+  const shapes = [];
+  for (const m of [SC.ring, SC.blobs]) {
+    const C = components(m, W, H);
+    C.list.forEach(c => {
+      const bw = c.x1 - c.x0 + 1, bh = c.y1 - c.y0 + 1, sub = new Uint8Array(bw * bh);
+      for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) if (C.lab[y * W + x] === c.id) sub[(y - c.y0) * bw + x - c.x0] = 1;
+      const loops = traceLoops(sub, bw, bh).map(l => orthogonalize(simplifyLoop(l, 2))).filter(l => l.length >= 3)
+        .map(l => l.map(([x, y]) => [cx(x + c.x0), cy(y + c.y0)]));
+      if (loops.length) shapes.push(loops);
+    });
+  }
+  const walls = bars.map(({ seg, t }) => straighten([cx(seg[0]), cy(seg[1]), cx(seg[2]), cy(seg[3]), Math.max(4, Math.round(t * k))]));
   return finalize({ width: Math.round((x1 - x0 + 1) * k), height: Math.round((y1 - y0 + 1) * k), wallThickness: 15, walls, shapes });
 }
 
