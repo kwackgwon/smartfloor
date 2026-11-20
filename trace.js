@@ -50,7 +50,58 @@ function wallMasks(P) {
     raw[i] = tone.dark ? ((av < 140 && ch < 50) || (r > 150 && r - g > 45 && r - b > 45) ? 1 : 0) : (ch < 40 && av >= tone.lo && av <= tone.hi ? 1 : 0);
     light[i] = raw[i] || (av < 200 && ch < 50) ? 1 : 0;
   }
-  return { W, H, raw, light, tone, wall: morph(morph(raw, W, H, 2, true), W, H, 2, false) };
+  const wall = morph(morph(raw, W, H, 2, true), W, H, 2, false);
+  return { W, H, raw, light, tone, wall: hatchWalls(light, wall, W, H) };
+}
+
+// 해치(빗금)·여러 줄로 그린 벽: 두 선 사이를 촘촘한 빗금으로 채운 벽, 창문처럼 2~3줄로 그린 벽은 칠해진 면이 아니라서 빠진다.
+// 촘촘한 무늬(간격 4px 이하)를 메워 면으로 만든 뒤, 길고 곧으며 긴 두 변이 곧은 선으로 이어진 막대만 벽으로 더한다
+// (의자 그림은 짧아서, 글자는 가장자리가 들쭉날쭉해서 빠진다)
+function hatchWalls(lines, wall, W, H) { // lines: 연한 선까지 포함한 마스크 (빗금은 연회색인 경우가 많다)
+  const S = Math.max(W, H), N = W * H;
+  const C = morph(morph(lines, W, H, 3, false), W, H, 3, true); // 닫힘: 촘촘한 무늬(간격 6px 이하) 메우기
+  const O = morph(morph(C, W, H, 2, true), W, H, 2, false);     // 열림: 5px 보다 얇은 것 지우기
+  const I = new Uint8Array(N); for (let i = 0; i < N; i++) I[i] = O[i] && !wall[i] ? 1 : 0;
+  const runH = new Int32Array(N), runV = new Int32Array(N);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W;) { if (!I[y * W + x]) { x++; continue; } let e = x; while (e < W && I[y * W + e]) e++; for (let k = x; k < e; k++) runH[y * W + k] = e - x; x = e; }
+  for (let x = 0; x < W; x++) for (let y = 0; y < H;) { if (!I[y * W + x]) { y++; continue; } let e = y; while (e < H && I[e * W + x]) e++; for (let k = y; k < e; k++) runV[k * W + x] = e - y; y = e; }
+  const maxT = Math.round(S * 0.02), minL = Math.round(S * 0.02);
+  // 덩어리를 길이 방향 한 칸씩 잘라 두께를 잰다: 곧고 두께가 고른 칸만 벽 (곡선 가구 등이 붙어 있어도 곧은 부분은 살린다)
+  const cand = [];
+  for (const horiz of [true, false]) {
+    const m = new Uint8Array(N);
+    for (let i = 0; i < N; i++) if (I[i] && (horiz ? runH[i] >= runV[i] * 2 : runV[i] >= runH[i] * 2)) m[i] = 1;
+    const { lab, list } = components(m, W, H);
+    for (const c of list) {
+      const [a0, a1, b0, b1] = horiz ? [c.x0, c.x1, c.y0, c.y1] : [c.y0, c.y1, c.x0, c.x1]; // a: 길이 방향, b: 두께 방향
+      const at = (a, b) => horiz ? b * W + a : a * W + b, lo = [], hi = [];
+      for (let a = a0; a <= a1; a++) { let l = -1, h = -1; for (let b = b0; b <= b1; b++) if (lab[at(a, b)] === c.id) { if (l < 0) l = b; h = b; } lo.push(l); hi.push(h); }
+      const th = lo.map((l, k) => l < 0 ? 0 : hi[k] - l + 1), ts = th.filter(Boolean).sort((x, y) => x - y);
+      if (!ts.length) continue;
+      const tm = ts[ts.length >> 1], good = th.map(t => t > 0 && t <= maxT && Math.abs(t - tm) <= Math.max(2, tm * 0.5));
+      const n = good.filter(Boolean).length;
+      if (tm < 4 || tm > maxT || n < Math.max(tm * 4, minL)) continue;
+      let eTop = 0, eBot = 0; // 긴 두 변에 원래 선이 이어져 있는지
+      const on = (a, b) => { for (let d = -1; d <= 1; d++) { const i = at(a, b + d); if (b + d >= 0 && b + d < (horiz ? H : W) && lines[i]) return 1; } return 0; };
+      good.forEach((g, k) => { if (g) { eTop += on(a0 + k, lo[k]); eBot += on(a0 + k, hi[k]); } });
+      if (eTop < n * 0.8 || eBot < n * 0.8) continue;
+      cand.push({ id: c.id, lab, cells: good.map((g, k) => g ? [a0 + k, lo[k], hi[k]] : null).filter(Boolean), horiz });
+    }
+  }
+  // 벽에 닿은 것부터, 받아들인 해치 벽을 거쳐 이어지는 것까지 (떨어져 있는 계단 난간·가구는 빠진다)
+  const idx = (c, a, b) => c.horiz ? b * W + a : a * W + b;
+  const out = wall.slice(), acc = new Set(), paint = (c, m) => {
+    for (const [a, l, h] of c.cells) for (let b = l; b <= h; b++) m[idx(c, a, b)] = 1; };
+  const touches = (c, m) => {
+    for (const [a, l, h] of c.cells) for (let b = l; b <= h; b++) if (m[idx(c, a, b)]) return true;
+    return false; };
+  for (let pass = 0; pass < 4; pass++) {
+    const near = morph(out, W, H, 3, false);
+    let grew = false;
+    for (const c of cand) if (!acc.has(c) && touches(c, near)) { acc.add(c); paint(c, out); grew = true; }
+    if (!grew) break;
+  }
+  return out;
 }
 
 // 정사각형(2r+1) 침식/팽창. 가로·세로로 나눠 창 안의 1 개수를 세서 빠르게 계산
@@ -516,7 +567,9 @@ function traceToPlan(w, P, widthM = 0) {
   const K0 = new Uint8Array(W * H);
   for (let i = 0; i < W * H; i++) if (lab[i] && keepId[lab[i]]) K0[i] = 1;
   const KE = closeExterior(bridgeWindows(K0, P.light, W, H), W, H); // 외벽 창문 구간 메우기 → 외벽 전부 닫기
-  const K = thinWalls(KE, P.raw, KE.F, W, H); // 얇은 칸막이 벽 더하기 (AI 없이)
+  // 얇은 칸막이 벽 더하기 (AI 없이): 벽을 연한 색으로 칠한 디자인 도면에서만.
+  // 진한 벽의 CAD 도면은 벽을 칠하거나 빗금으로 그리고(hatchWalls), 얇은 한 줄 선은 대부분 가구라서 쓰지 않는다
+  const K = P.tone && !P.tone.dark ? thinWalls(KE, P.raw, KE.F, W, H) : KE;
 
   // 2. 좌석 도면처럼 단순화: 외벽 띠 + 같은 두께의 내부 벽 막대 + 기둥
   const SC = schematize(K, KE.F, KE.t, W, H), tInt = SC.bars.length ? SC.bars[0].t : Math.max(3, Math.round(KE.t * 0.6));
