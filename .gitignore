@@ -3,3 +3,4 @@ node_modules/
 figma-plugin/code.js
 
 real-run-out/
+*.png

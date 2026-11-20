@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SmartFloor</title>
-  <link rel="stylesheet" href="style.css?v=9">
+  <link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
   <header class="top">
@@ -33,27 +33,42 @@
       </section>
 
       <section class="step">
-        <h2><span class="num">2</span>요청 사항 <small>선택</small></h2>
-        <textarea name="note" rows="2" placeholder="예) 오른쪽 아래 창고 벽은 빼 주세요"></textarea>
+        <h2><span class="num">2</span>건물 가로 길이 <small>선택</small></h2>
+        <label class="inline"><input name="widthM" type="number" min="1" max="200" step="0.1" placeholder="예) 15.1"><span>m</span></label>
+        <p class="note">실제 크기(cm)를 맞추는 데 써요. 비워 두면 AI 가 도면 치수를 읽거나, AI 없이는 15m 로 가정해요.</p>
       </section>
 
-      <button class="primary big" id="gen">Gemini로 도면 생성</button>
+      <button class="primary big" id="gen">도면 생성</button>
+      <p class="note center">AI 없이 이미지만 분석해요 · 무료 · 키 필요 없음</p>
 
-      <div id="notice" class="notice" hidden>
-        <b id="notice-title"></b>
-        <p id="notice-body"></p>
-        <p id="notice-wait" class="wait"></p>
-        <button type="button" class="ghost" id="retry">다시 시도</button>
-      </div>
+      <section class="ai">
+        <h2>AI로 다듬기 <small>선택</small></h2>
+        <p class="note">AI 가 얇은 칸막이를 보완하고 도면 치수를 읽어요. 무료 AI 는 하루 사용 한도가 있어요.</p>
+        <textarea name="note" rows="2" placeholder="요청 사항 (선택) 예) 오른쪽 아래 창고 벽은 빼 주세요"></textarea>
+        <button type="button" class="ghost big" id="refine">AI로 다듬기</button>
 
-      <details id="settings" class="settings">
-        <summary><span>Gemini 설정</span><span id="key-state" class="state">API 키 필요</span></summary>
-        <label><span>API 키 · <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">발급받기 ↗</a></span>
-          <input id="key" type="password" autocomplete="off" placeholder="AIza...">
-        </label>
-        <label>모델 <small>키를 넣으면 최신 모델 자동 선택</small><input id="model" list="models" value="gemini-3.8-flash"></label>
-        <datalist id="models"></datalist>
-      </details>
+        <div id="notice" class="notice" hidden>
+          <b id="notice-title"></b>
+          <p id="notice-body"></p>
+          <p id="notice-wait" class="wait"></p>
+          <button type="button" class="ghost" id="retry">다시 시도</button>
+        </div>
+
+        <details id="settings" class="settings">
+          <summary><span>AI 설정</span><span id="key-state" class="state">키 없음</span></summary>
+          <p class="note">키가 둘 다 있으면 Gemini 를 먼저 쓰고, 한도에 걸리면 OpenRouter 무료 모델로 넘어가요.</p>
+          <label><span>Gemini API 키 · <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">발급받기 ↗</a></span>
+            <input id="key" type="password" autocomplete="off" placeholder="AIza...">
+          </label>
+          <label>Gemini 모델 <small>키를 넣으면 최신 모델 자동 선택</small><input id="model" list="models" value="gemini-3.8-flash"></label>
+          <datalist id="models"></datalist>
+          <label><span>OpenRouter API 키 · <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">무료 발급 ↗</a></span>
+            <input id="or-key" type="password" autocomplete="off" placeholder="sk-or-...">
+          </label>
+          <label>OpenRouter 모델 <small>비우면 무료 비전 모델 자동 선택</small><input id="or-model" list="or-models" placeholder="자동 (…:free)"></label>
+          <datalist id="or-models"></datalist>
+        </details>
+      </section>
     </form>
 
     <section class="card view">
@@ -68,16 +83,18 @@
       <div class="stage" id="stage">
         <div id="empty" class="empty">
           <b>아직 도면이 없습니다</b>
-          왼쪽에 도면 이미지를 올린 뒤 <b>Gemini로 도면 생성</b>을 누르세요.
+          왼쪽에 도면 이미지를 올린 뒤 <b>도면 생성</b>을 누르세요.
         </div>
-        <div id="loading" class="empty" hidden><span class="spin"></span><span id="loading-text">Gemini가 도면을 그리는 중…</span></div>
+        <div id="loading" class="empty" hidden><span class="spin"></span><span id="loading-text">도면 분석 중…</span></div>
         <canvas id="c" hidden></canvas>
       </div>
     </section>
   </main>
 
   <!-- ?v= 는 배포할 때마다 올린다 (브라우저가 예전 파일을 쓰지 않게) -->
-  <script src="gemini.js?v=9"></script>
-  <script src="app.js?v=9"></script>
+  <script src="trace.js?v=10"></script>
+  <script src="gemini.js?v=10"></script>
+  <script src="openrouter.js?v=10"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

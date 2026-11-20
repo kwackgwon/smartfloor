@@ -53,6 +53,15 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .drop:hover, .drop.over { border-color: var(--indigo); background: rgba(99,102,241,.12); }
 .drop img { max-width: 100%; max-height: 240px; border-radius: 6px; }
 
+/* 가로 길이 입력, AI 영역 */
+.panel label.inline { flex-direction: row; align-items: center; gap: 8px; }
+.panel label.inline input { flex: 1; }
+.note.center { text-align: center; margin-top: -8px; }
+.ai { border-top: 1px solid var(--line); padding-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+.ai h2 { margin: 0; font-size: 15px; }
+.ai h2 small { font-weight: 400; font-size: 12px; color: var(--muted); }
+.ghost.big { padding: 10px 14px; font-weight: 600; }
+
 /* 오류 안내 */
 .notice { border: 1px solid #fcd34d; background: #fffbeb; color: #78350f; border-radius: 12px; padding: 12px; font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
 .notice b { font-size: 14px; }
@@ -63,13 +72,13 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 @media (prefers-color-scheme: dark) { .notice { background: #2a2210; border-color: #78591a; color: #fde68a; } }
 
 /* Gemini 설정 (접기) */
-.settings { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; }
+.settings { display: flex; flex-direction: column; }
 .settings summary { cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 600; list-style: none; }
 .settings summary::-webkit-details-marker { display: none; }
 .settings summary::before { content: '⚙'; margin-right: 6px; color: var(--muted); }
 .settings summary > span:first-child { margin-right: auto; }
 .settings[open] summary { margin-bottom: 10px; }
-.settings label + label { margin-top: 10px; }
+.settings label + label, .settings .note + label { margin-top: 10px; }
 .state { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: #fee2e2; color: #991b1b; }
 .state.ok { background: #d1fae5; color: #065f46; }
 

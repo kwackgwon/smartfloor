@@ -65,21 +65,25 @@ function save() {
   catch (e) { say('저장 실패 (브라우저 저장소를 사용할 수 없음)', 'chip err'); }
 }
 
-// ── 오류 안내 (사용량 폭주·한도 초과·시간 초과) ───────────
+// ── 오류 안내 (AI 사용량 폭주·한도 초과·시간 초과) ─────────
 let noticeTimer;
-const AI_STUDIO = '<a href="https://aistudio.google.com" target="_blank" rel="noopener">Google AI Studio</a>';
-function showNotice(err, partial) {
+const LINK = {
+  Gemini: '<a href="https://aistudio.google.com" target="_blank" rel="noopener">Google AI Studio</a>',
+  OpenRouter: '<a href="https://openrouter.ai/settings/credits" target="_blank" rel="noopener">OpenRouter</a>'
+};
+function showNotice(err, who) {
   const N = {
-    busy: ['Google Gemini 서버가 붐벼요', '내 키나 설정 문제가 아니라 Google 쪽이 잠시 바쁜 거예요. 조금 뒤 다시 시도하면 대부분 풀려요. 계속되면 ⚙ Gemini 설정에서 다른 모델을 골라 보세요.', 60],
+    busy: [`${who} 서버가 붐벼요`, `내 키나 설정 문제가 아니라 ${who} 쪽이 잠시 바쁜 거예요. 조금 뒤 다시 시도하면 대부분 풀려요. 계속되면 ⚙ AI 설정에서 다른 모델을 골라 보세요.`, 60],
     quota: err.daily
-      ? ['오늘 쓸 수 있는 사용량을 다 썼어요', `이 API 키의 하루 한도를 넘었어요. 한도가 풀린 뒤 다시 쓰거나, ⚙ Gemini 설정에서 다른 모델을 고르세요 (한도는 모델마다 따로예요). 자주 쓴다면 ${AI_STUDIO}에서 결제를 연결하면 한도가 크게 늘어요.`, 0]
-      : ['API 키 사용 한도를 넘었어요', `짧은 시간에 요청이 많았어요. 잠시 기다리면 풀려요. 자주 막힌다면 ${AI_STUDIO}에서 남은 사용량을 확인하거나 결제를 연결하세요.`, 60],
-    timeout: ['Gemini 응답이 너무 오래 걸렸어요', '도면이 복잡하거나 Google 쪽이 바쁠 때 생겨요. 잠시 뒤 다시 시도해 보세요.', 30]
+      ? ['오늘 쓸 수 있는 AI 사용량을 다 썼어요', `${who} 키의 하루 무료 한도를 넘었어요. 한도가 풀린 뒤 다시 쓰거나 다른 모델을 고르세요. 자주 쓴다면 ${LINK[who]}에서 결제를 연결하면 한도가 크게 늘어요.`, 0]
+      : ['AI 사용 한도를 넘었어요', `짧은 시간에 요청이 많았어요. 잠시 기다리면 풀려요. 자주 막힌다면 ${LINK[who]}에서 남은 사용량을 확인하세요.`, 60],
+    timeout: [`${who} 응답이 너무 오래 걸렸어요`, '도면이 복잡하거나 AI 쪽이 바쁠 때 생겨요. 잠시 뒤 다시 시도해 보세요.', 30]
   }[err.kind];
   if (!N) return;
   const [title, body, def] = N;
+  const tip = who === 'Gemini' && !$('or-key').value.trim() ? '<br>⚙ AI 설정에 OpenRouter 무료 키를 넣어 두면 Gemini 가 막힐 때 자동으로 넘어가요.' : '';
   $('notice-title').textContent = title;
-  $('notice-body').innerHTML = body + (partial ? '<br>그동안 이미지 분석만으로 만든 도면을 보여 드리고 있어요 (얇은 칸막이·실제 치수는 빠질 수 있어요).' : '');
+  $('notice-body').innerHTML = body + tip + (plan ? '<br>지금 보이는 도면(AI 없이 만든 것)은 그대로 쓸 수 있어요.' : '');
   let left = err.retryAfter || def;
   clearInterval(noticeTimer);
   const tickWait = () => {
@@ -91,69 +95,116 @@ function showNotice(err, partial) {
   $('notice').hidden = false;
 }
 const hideNotice = () => { clearInterval(noticeTimer); $('notice').hidden = true; };
-$('retry').onclick = () => generate(false);
+$('retry').onclick = () => refine();
 
-// ── Gemini 생성 ──────────────────────────────────────────
+const working = on => { $('gen').disabled = $('refine').disabled = on; };
+const widthM = () => +new FormData(form).get('widthM') || 0;
+let pxCache = null; // 같은 이미지면 픽셀 분석을 다시 하지 않는다
+async function pixels() {
+  if (!pxCache || pxCache.image !== image) pxCache = { image, px: wallMasks(await readPixels(image)) };
+  return pxCache.px;
+}
+
+// ── 도면 생성: AI 없이 이미지만 분석 (무료, 한도 없음) ─────
 form.onsubmit = e => { e.preventDefault(); generate(); };
-async function generate(ask = true) { // ask: 기존 도면을 바꿀지 물어볼지 (다시 시도 때는 묻지 않는다)
-  const f = Object.fromEntries(new FormData(form)), key = $('key').value.trim(), model = $('model').value.trim() || DEFAULT_MODEL;
+async function generate() {
   if (!image) { say('도면 이미지를 먼저 올려 주세요', 'chip err'); return; }
-  if (!key) { say('Gemini API 키를 입력하세요', 'chip err'); $('settings').open = true; $('key').focus(); return; }
-  if (ask && plan && !confirm('현재 도면과 편집 내용이 새 도면으로 바뀝니다. 계속할까요?')) return;
-  const btn = $('gen'); btn.disabled = true; hideNotice();
-  $('empty').hidden = true; cvs.hidden = true; $('loading').hidden = false;
-  // 진행 상황 표시: 분석 중 → 벽 n개 그리는 중 → 다듬는 중 + 경과 시간 (멈춘 것처럼 보이지 않게)
-  // 이미지 픽셀만으로 만든 미리보기가 먼저 뜨고, Gemini 답이 오면 최종 도면으로 바뀐다
-  const t0 = Date.now(), base = '도면 분석 중';
-  let stage = base, pre = '', preview = false;
-  const status = () => {
-    const t = `${preview ? '미리보기 표시됨 · ' : ''}Gemini ${pre}${stage}… ${Math.round((Date.now() - t0) / 1000)}초`;
-    say(t, 'chip'); $('loading-text').textContent = t;
-  };
-  const onProgress = e => {
-    stage = e.phase === 'refine' ? '벽 다듬는 중' : e.phase === 'draw' ? `벽 그리는 중 (${e.count}개)` : base;
-    status();
-  };
-  const onPreview = p => { preview = true; show(p); status(); };
-  const tick = setInterval(status, 1000); status();
+  if (plan && !confirm('현재 도면과 편집 내용이 새 도면으로 바뀝니다. 계속할까요?')) return;
+  working(true); hideNotice();
+  $('empty').hidden = true; cvs.hidden = true; $('loading').hidden = false; $('loading-text').textContent = '도면 분석 중…';
+  say('도면 분석 중…', 'chip');
+  await new Promise(r => setTimeout(r, 30)); // 로딩 표시가 먼저 그려지게
+  const t0 = Date.now();
   try {
-    // 재시도 규칙 (최대 3번):
-    //  · 시간 초과 → 같은 모델, 생각 수준 low 로 (빠르게)
-    //  · 사용량 폭주 등 일시 오류 → 잠시 기다렸다 다른 flash 모델로 (없으면 같은 모델, 한도 초과면 멈춤)
-    //  · 단종 모델 → Google 이 안내한 모델로
-    const other = [...$('models').options].map(o => o.value).find(n => n !== model && n.endsWith('-flash'));
-    let d, last, cur = { model, level: 'high' };
-    for (let i = 0; i < 3 && !d; i++) {
-      try { d = await generatePlan(f, image, key, cur.model, onProgress, onPreview, cur.level); }
-      catch (err) {
-        last = err;
-        if (!err.busy && !err.suggest) throw err;
-        if (i === 2 || (err.timeout && cur.level === 'low')) break; // 빠르게 해도 시간 초과면 더 기다리지 않는다
-        if (err.kind === 'quota' && (!other || cur.model === other)) break; // 한도 초과: 같은 모델은 다시 해도 막히므로 다른 모델만 시도
-        const next = err.suggest ? { model: err.suggest, level: cur.level }
-          : err.timeout ? { model: cur.model, level: 'low' }
-          : { model: other && cur.model !== other ? other : cur.model, level: cur.level };
-        pre = `${next.model !== cur.model ? next.model + ' 로 ' : ''}${next.level !== cur.level ? '빠르게 ' : ''}재시도 ${i + 2}/3 · `;
-        stage = '대기 중'; status();
-        if (!err.suggest && !err.timeout) await new Promise(r => setTimeout(r, 3000 * (i + 1)));
-        stage = base; cur = next;
-      }
-      if (d && cur.model !== model) { $('model').value = cur.model; saveSettings(); }
-    }
-    if (!d) throw last;
-    show(d); save();
-    say(`도면 생성 완료 · ${Math.round((Date.now() - t0) / 1000)}초`);
+    const px = await pixels();
+    show(traceToPlan(autoExtent(px), px, widthM())); save();
+    say(`도면 생성 완료 · ${((Date.now() - t0) / 1000).toFixed(1)}초 · AI 없이`);
   } catch (err) {
     $('loading').hidden = true;
-    if (preview) { // 미리보기(이미지 분석 결과)도 쓸 만한 도면이므로 그것으로 마무리한다
-      cvs.hidden = false; save();
-      say(`이미지 분석만으로 완성 · Gemini 보정 실패 (${err.message})`, 'chip');
-    } else {
-      if (plan) cvs.hidden = false; else $('empty').hidden = false;
-      say(err.message, 'chip err');
+    if (plan) cvs.hidden = false; else $('empty').hidden = false;
+    say('도면에서 벽을 찾지 못했습니다. 벽이 또렷한 도면 이미지인지 확인해 주세요', 'chip err');
+  } finally { working(false); }
+}
+
+// ── AI로 다듬기: Gemini 먼저, 막히면 OpenRouter 무료 모델 ────
+$('refine').onclick = () => refine();
+async function refine() {
+  const f = Object.fromEntries(new FormData(form)), gKey = $('key').value.trim(), orKey = $('or-key').value.trim();
+  if (!image) { say('도면 이미지를 먼저 올려 주세요', 'chip err'); return; }
+  if (!gKey && !orKey) { say('⚙ AI 설정에 Gemini 또는 OpenRouter(무료) 키를 넣어 주세요', 'chip err'); $('settings').open = true; return; }
+  working(true); hideNotice();
+  const t0 = Date.now();
+  let who = gKey ? 'Gemini' : 'OpenRouter', stage = '도면 분석 중', pre = '';
+  const status = () => say(`AI(${who}) ${pre}${stage}… ${Math.round((Date.now() - t0) / 1000)}초`, 'chip');
+  const onProgress = e => { stage = e.phase === 'draw' ? `벽 찾는 중 (${e.count}개)` : '도면 분석 중'; status(); };
+  const tick = setInterval(status, 1000); status();
+  try {
+    const px = await pixels();
+    if (!plan) show(traceToPlan(autoExtent(px), px, widthM())); // AI 를 기다리는 동안 AI 없이 만든 도면을 먼저 보여 준다
+    let w, last;
+    if (gKey) {
+      try { w = await viaGemini(f, gKey, onProgress, (p, st) => { pre = p; stage = st; status(); }); }
+      catch (err) { last = err; if (!orKey) throw err; }
     }
-    showNotice(err, preview);
-  } finally { clearInterval(tick); btn.disabled = false; }
+    if (!w && orKey) {
+      who = 'OpenRouter'; pre = gKey ? 'Gemini 대신 ' : ''; stage = '도면 분석 중'; status();
+      w = await viaOpenRouter(f, orKey, onProgress, (p, st) => { pre = p; stage = st; status(); });
+    }
+    if (!w) throw last;
+    show(traceToPlan(w, px, widthM())); save();
+    say(`AI로 다듬기 완료 · ${who} · ${Math.round((Date.now() - t0) / 1000)}초`);
+  } catch (err) {
+    say(`AI로 다듬지 못했어요 (${err.message})`, 'chip err');
+    showNotice(err, who);
+  } finally { clearInterval(tick); working(false); }
+}
+
+// Gemini 재시도 규칙 (최대 3번):
+//  · 시간 초과 → 같은 모델, 생각 수준 low 로 (빠르게) · 빠르게 해도 시간 초과면 멈춤
+//  · 사용량 폭주 등 일시 오류 → 잠시 기다렸다 다른 flash 모델로 (한도 초과면 같은 모델은 다시 하지 않음)
+//  · 단종 모델 → Google 이 안내한 모델로
+async function viaGemini(f, key, onProgress, onRetry) {
+  const model = $('model').value.trim() || DEFAULT_MODEL;
+  const other = [...$('models').options].map(o => o.value).find(n => n !== model && n.endsWith('-flash'));
+  let cur = { model, level: 'high' }, last;
+  for (let i = 0; i < 3; i++) {
+    try {
+      const w = await askGemini(f, image, key, cur.model, cur.level, onProgress);
+      if (cur.model !== model) { $('model').value = cur.model; saveSettings(); }
+      return w;
+    } catch (err) {
+      last = err;
+      if (!err.busy && !err.suggest) throw err;
+      if (i === 2 || (err.timeout && cur.level === 'low')) break;
+      if (err.kind === 'quota' && (!other || cur.model === other)) break;
+      const next = err.suggest ? { model: err.suggest, level: cur.level }
+        : err.timeout ? { model: cur.model, level: 'low' }
+        : { model: other && cur.model !== other ? other : cur.model, level: cur.level };
+      onRetry(`${next.model !== cur.model ? next.model + ' 로 ' : ''}${next.level !== cur.level ? '빠르게 ' : ''}재시도 ${i + 2}/3 · `, '대기 중');
+      if (!err.suggest && !err.timeout) await new Promise(r => setTimeout(r, 3000 * (i + 1)));
+      cur = next;
+    }
+  }
+  throw last;
+}
+
+// OpenRouter: 고른 모델, 없으면 무료 비전 모델을 앞에서부터 최대 3개 시도 (하루 한도면 바로 멈춤)
+async function viaOpenRouter(f, key, onProgress, onRetry) {
+  const chosen = $('or-model').value.trim();
+  let list = [];
+  try { list = await orFreeVisionModels(); } catch (e) { if (!chosen) throw e; }
+  const models = chosen ? [list.find(m => m.id === chosen) || { id: chosen }] : list.slice(0, 3);
+  if (!models.length) throw new Error('지금 쓸 수 있는 OpenRouter 무료 비전 모델이 없습니다');
+  let last;
+  for (let i = 0; i < models.length; i++) {
+    try { return await askOpenRouter(f, image, key, models[i], onProgress); }
+    catch (err) {
+      last = err;
+      if (!err.busy || err.daily || i === models.length - 1) break;
+      onRetry(`${models[i + 1].id} 로 재시도 ${i + 2}/${models.length} · `, '도면 분석 중');
+    }
+  }
+  throw last;
 }
 
 // ── 참고 도면 이미지 ─────────────────────────────────────
@@ -221,18 +272,18 @@ $('png').onclick = () => { // 최대 2px/cm (긴 변 4000px 이하) 해상도로
 
 let rz; addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(layout, 100); });
 
-// API 키·모델은 이 브라우저에만 저장 (다른 곳으로 전송되지 않음, Gemini 호출에만 사용)
-try { $('key').value = localStorage.getItem(KEY + '-key') || ''; $('model').value = localStorage.getItem(KEY + '-model') || $('model').value; } catch (e) { /* 저장소 사용 불가 */ }
-const keyState = () => { // 키가 없으면 설정을 펼쳐 둔다
-  const ok = !!$('key').value.trim();
-  $('key-state').textContent = ok ? '키 입력됨' : 'API 키 필요'; $('key-state').className = ok ? 'state ok' : 'state';
-  if (!ok) $('settings').open = true;
+// AI 키·모델은 이 브라우저에만 저장 (각 AI 호출에만 쓰고 다른 곳으로 보내지 않는다)
+const SETTINGS = { key: '-key', model: '-model', 'or-key': '-or-key', 'or-model': '-or-model' };
+try { for (const [id, k] of Object.entries(SETTINGS)) $(id).value = localStorage.getItem(KEY + k) || $(id).value; } catch (e) { /* 저장소 사용 불가 */ }
+const keyState = () => {
+  const on = [$('key').value.trim() && 'Gemini', $('or-key').value.trim() && 'OpenRouter'].filter(Boolean);
+  $('key-state').textContent = on.length ? on.join(' · ') + ' 키' : '키 없음'; $('key-state').className = on.length ? 'state ok' : 'state';
 };
 keyState();
 function saveSettings() {
-  try { localStorage.setItem(KEY + '-key', $('key').value.trim()); localStorage.setItem(KEY + '-model', $('model').value.trim()); } catch (e) { /* 저장소 사용 불가 */ }
+  try { for (const [id, k] of Object.entries(SETTINGS)) localStorage.setItem(KEY + k, $(id).value.trim()); } catch (e) { /* 저장소 사용 불가 */ }
 }
-async function refreshModels() { // 키로 쓸 수 있는 모델 목록을 받아 자동 완성에 채운다
+async function refreshModels() { // Gemini: 키로 쓸 수 있는 모델 목록을 받아 자동 완성에 채운다
   const key = $('key').value.trim();
   if (!key) return;
   try {
@@ -241,11 +292,15 @@ async function refreshModels() { // 키로 쓸 수 있는 모델 목록을 받�
     const best = names.find(n => n.endsWith('-flash')) || names[0];
     const cur = $('model').value.trim(); // 목록에 없거나 최신보다 구버전이면 최신 flash 로 교체
     if (best && (!names.includes(cur) || ver(cur) < ver(best))) { $('model').value = best; saveSettings(); }
-  } catch (e) { /* 키 오류 등은 생성할 때 안내 */ }
+  } catch (e) { /* 키 오류 등은 다듬을 때 안내 */ }
 }
-$('model').onchange = saveSettings;
+async function refreshOrModels() { // OpenRouter: 무료 비전 모델 목록 (키 없이 조회)
+  try { $('or-models').innerHTML = (await orFreeVisionModels()).map(m => `<option value="${m.id}">`).join(''); } catch (e) { /* 목록 없이도 자동 선택 */ }
+}
+$('model').onchange = $('or-model').onchange = saveSettings;
 $('key').onchange = () => { saveSettings(); keyState(); refreshModels(); };
-refreshModels();
+$('or-key').onchange = () => { saveSettings(); keyState(); };
+refreshModels(); refreshOrModels();
 
 try { // 새로고침 시 저장된 도면 복원 (예전 형식 저장본은 버린다)
   const d = JSON.parse(localStorage.getItem(KEY));
