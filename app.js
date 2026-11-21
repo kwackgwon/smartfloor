@@ -1,7 +1,7 @@
 // 모든 좌표는 cm. 그릴 때만 화면 배율 s 를 곱한다.
 // plan = { v, width, height, wallThickness, walls: [[x1,y1,x2,y2,두께?]], shapes: [[고리...]] } (trace.js 참고)
 // 저장: localStorage 'smartfloor' = plan, 'smartfloor-key' / '-model' = Gemini 설정
-const KEY = 'smartfloor', PLAN_V = 2, WALL = '#D9D9D9', EDGE = '#BDBDBD', GRID = 10, PAD = 30; // PAD: 외벽이 잘리지 않게 도면 둘레 여백 (cm)
+const KEY = 'smartfloor', PLAN_V = 2, WALL = '#D9D9D9', GRID = 10, PAD = 30; // PAD: 외벽이 잘리지 않게 도면 둘레 여백 (cm)
 const $ = id => document.getElementById(id);
 const cvs = $('c'), g = cvs.getContext('2d'), msg = $('msg'), file = $('file'), form = $('form');
 let plan = null, image = null, s = 1, tmp = null;
@@ -24,34 +24,24 @@ function layout() { // 화면 폭에 맞춰 캔버스 크기 결정 (고해상�
 }
 
 function draw(scale = s * (devicePixelRatio || 1), ratio = devicePixelRatio || 1) {
-  const px = v => v / scale * ratio; // 화면 px -> cm
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.fillStyle = '#fff'; g.fillRect(0, 0, cvs.width, cvs.height);
   g.setTransform(scale, 0, 0, scale, PAD * scale, PAD * scale);
 
-  g.strokeStyle = '#f1f5f9'; g.lineWidth = px(1); // 1m 격자
-  for (let x = 100; x < plan.width; x += 100) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, plan.height); g.stroke(); }
-  for (let y = 100; y < plan.height; y += 100) { g.beginPath(); g.moveTo(0, y); g.lineTo(plan.width, y); g.stroke(); }
-
-  // 벽: 테두리를 먼저 조금 두껍게 그리고 그 위를 #D9D9D9 로 채운다 → 겹치는 벽은 테두리 없이 하나로 이어진다
-  const lines = [...plan.walls, ...(tmp ? [tmp] : [])], edge = px(1.5);
-  const paths = (plan.shapes || []).map(sh => {
+  // 벽: 흰 바탕에 #D9D9D9 한 색으로만 칠한다 (테두리·격자 없음 → 겹치는 벽은 하나로 이어진다)
+  const lines = [...plan.walls, ...(tmp ? [tmp] : [])];
+  g.lineJoin = 'miter'; g.strokeStyle = g.fillStyle = WALL;
+  lines.forEach(w => {
+    // 옮겨 그린 벽(두께 있음)은 끝점이 벽 끝에 정확히 맞춰져 있어 끝을 평평하게, 직접 그린 벽은 모서리가 이어지게 사각 끝
+    g.lineCap = w[4] ? 'butt' : 'square';
+    g.lineWidth = w[4] || plan.wallThickness;
+    g.beginPath(); g.moveTo(w[0], w[1]); g.lineTo(w[2], w[3]); g.stroke();
+  });
+  (plan.shapes || []).forEach(sh => {
     const P = new Path2D();
     sh.forEach(l => { l.forEach(([x, y], i) => i ? P.lineTo(x, y) : P.moveTo(x, y)); P.closePath(); });
-    return P;
+    g.fill(P, 'evenodd');
   });
-  g.lineJoin = 'miter';
-  for (const fill of [false, true]) {
-    g.strokeStyle = g.fillStyle = fill ? WALL : EDGE;
-    lines.forEach(w => {
-      // 옮겨 그린 벽(두께 있음)은 끝점이 벽 끝에 정확히 맞춰져 있어 끝을 평평하게, 직접 그린 벽은 모서리가 이어지게 사각 끝
-      g.lineCap = w[4] ? 'butt' : 'square';
-      g.lineWidth = (w[4] || plan.wallThickness) + (fill ? 0 : edge * 2);
-      g.beginPath(); g.moveTo(w[0], w[1]); g.lineTo(w[2], w[3]); g.stroke();
-    });
-    paths.forEach(P => { if (fill) g.fill(P, 'evenodd'); else { g.lineWidth = edge * 2; g.stroke(P); } });
-  }
-
 }
 
 function show(p) {
