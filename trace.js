@@ -26,12 +26,13 @@ async function readPixels(dataURL) {
     let bg = 0; for (let v = 1; v < 256; v++) if (hist[v] > hist[bg]) bg = v;
     return { hist, colorful, bg };
   };
-  let { hist, colorful, bg } = stats();
+  let { hist, colorful, bg } = stats(), noisy = false;
   // 스캔 잡음: 이웃 픽셀 밝기 차이의 중앙값(깨끗한 도면은 0)이 2 를 넘으면 5x5 중앙값 필터 (선 가장자리는 지키고 잡음만 지운다)
   { const diffs = new Uint32Array(256);
     for (let i = 0; i < N - 1; i += 7) { const a = (d[4 * i] + d[4 * i + 1] + d[4 * i + 2]) / 3, b = (d[4 * i + 4] + d[4 * i + 5] + d[4 * i + 6]) / 3; diffs[Math.min(255, Math.abs(a - b) | 0)]++; }
     let cum = 0, med = 0, tot = 0; for (const v of diffs) tot += v; for (; med < 255; med++) { cum += diffs[med]; if (cum >= tot / 2) break; }
     if (med > 2 && colorful < N * 0.05) {
+      noisy = true;
       const L = new Uint8Array(N); for (let i = 0; i < N; i++) L[i] = (d[4 * i] + d[4 * i + 1] + d[4 * i + 2]) / 3;
       const win = new Uint8Array(25);
       for (let y = 2; y < H - 2; y++) for (let x = 2; x < W - 2; x++) {
@@ -47,7 +48,19 @@ async function readPixels(dataURL) {
   let near = 0; for (let v = Math.max(0, lo - 4); v <= Math.min(255, 2 * bg - lo + 4); v++) near += hist[v];
   let dark = 0, acc = 0; for (; dark < 255; dark++) { acc += hist[dark]; if (acc > N * 0.002) break; } // 가장 진한 0.2%
   const white = lo - 4;
-  if (white < 240 && white - dark >= 60) { // 회색 배경·잡음·낮은 대비일 때만 (깨끗한 도면은 그대로)
+  // 배경이 벽보다 어두운 회색 배경(연회색 벽 도면): 배경보다 밝은 무채색 봉우리가 0.5% 넘게 있으면 '배경과 다른 정도'를 잉크로 바꾼다
+  let brightPeak = false;
+  if (bg < 240) for (let v = bg + 8; v < 252; v++) if (hist[v] > N * 0.005 && hist[v] >= hist[v - 1] && hist[v] >= hist[v + 1]) {
+    // 배경 봉우리의 꼬리가 아닌 따로 선 봉우리: 배경과 그 사이에 골짜기(봉우리 높이의 절반 아래)가 있어야 한다
+    let valley = Infinity; for (let u = bg + 2; u < v; u++) valley = Math.min(valley, hist[u]);
+    if (valley < hist[v] * 0.5) { brightPeak = true; break; }
+  }
+  if (brightPeak) {
+    const dh = new Float64Array(256); for (let v = 0; v < 256; v++) dh[Math.abs(v - bg)] += hist[v];
+    let p = 0, acc2 = 0; for (; p < 255; p++) { acc2 += dh[p]; if (acc2 >= N * 0.998) break; }
+    const lut = new Uint8ClampedArray(256); for (let v = 0; v < 256; v++) lut[v] = 255 - Math.abs(v - bg) * 255 / Math.max(1, p);
+    for (let i = 0; i < d.length; i += 4) { const v = lut[(d[i] + d[i + 1] + d[i + 2]) / 3 | 0]; d[i] = d[i + 1] = d[i + 2] = v; }
+  } else if (white < 240 && white - dark >= (noisy ? 60 : 20)) { // 잡음 있던 이미지는 남은 잡음이 커지지 않게 대비 차이가 클 때만 // 회색 배경·잡음·낮은 대비일 때만 (깨끗한 도면은 그대로)
     const k = 255 / Math.max(1, white - dark), lut = new Uint8ClampedArray(256);
     for (let v = 0; v < 256; v++) lut[v] = (v - dark) * k;
     for (let i = 0; i < d.length; i += 4) { d[i] = lut[d[i]]; d[i + 1] = lut[d[i + 1]]; d[i + 2] = lut[d[i + 2]]; }
@@ -158,13 +171,57 @@ function hatchWalls(lines, wall, W, H) { // lines: 연한 선까지 포함한 �
     if (n >= 3 && enclosed(c, withHatch)) cand.splice(i, 1);
   }
   const gapMax = S * 0.08, inLine = c => enclosed(c) && [...acc].some(d => d.horiz === c.horiz && Math.abs(d.mid - c.mid) <= 3 && Math.max(d.a0 - c.a1, c.a0 - d.a1) <= gapMax);
+  // 얇은 빗금벽: 두 평행선 사이(3~1%S px)에 빗금이 있는 쌍을 원래 선으로 찾는다. 닫힘이 바로 옆 가구(점무늬 카운터 등)와
+  // 합쳐 폭 초과로 버리는 경우를 살린다. 속이 비었거나(책상) 꽉 찬(이미 wall) 것은 잉크 비율로 빠진다
+  const pairs = parallelPairs(lines, W, H);
   for (let pass = 0; pass < 6; pass++) {
     const near = morph(out, W, H, 3, false);
     let grew = false;
     for (const c of cand) if (!acc.has(c) && (touches(c, near) || inLine(c))) { acc.add(c); paint(c, out); grew = true; }
     if (!grew) break;
   }
+  if (pairs.length) { // 끝 하나가 벽(넉넉한 거리)에 닿는 쌍만 벽으로
+    const wMax = Math.max(6, Math.round(S * 0.01)), near = morph(out, W, H, 2 * wMax, false);
+    for (const q of pairs) {
+      const ends = q.horiz ? [[q.b0, (q.a0 + q.a1) >> 1], [q.b1 - 1, (q.a0 + q.a1) >> 1]] : [[(q.a0 + q.a1) >> 1, q.b0], [(q.a0 + q.a1) >> 1, q.b1 - 1]];
+      if (!ends.some(([x, y]) => near[y * W + x])) continue;
+      for (let a = q.a0; a <= q.a1; a++) for (let b = q.b0; b < q.b1; b++) out[q.horiz ? a * W + b : b * W + a] = 1;
+    }
+  }
   return out;
+}
+
+// 평행선 쌍: 길이 방향으로 이어진(끊김 2px 이하) 긴 선(5%S 이상) 두 개가 3~wMax px 간격으로 나란하고,
+// 사이에 빗금 잉크가 15~75%, 거의 모든 줄에 잉크가 있으면 얇은 빗금벽 { horiz, a0, a1 (두께 방향), b0, b1 (길이 방향) }
+function parallelPairs(lines, W, H) {
+  const S = Math.max(W, H), minL = Math.round(S * 0.05), wMax = Math.max(6, Math.round(S * 0.01)), res = [];
+  for (const horiz of [false, true]) {
+    const A = horiz ? H : W, B = horiz ? W : H, at = (a, b) => horiz ? a * W + b : b * W + a;
+    const segs = [];
+    for (let a = 0; a < A; a++) {
+      const out = []; let s = -1, e = -1, gap = 0;
+      for (let b = 0; b <= B; b++) {
+        const on = b < B && lines[at(a, b)];
+        if (on) { if (s < 0) s = b; e = b; gap = 0; }
+        else if (s >= 0 && ++gap > 2) { if (e + 1 - s >= minL) out.push([s, e + 1]); s = -1; gap = 0; }
+      }
+      segs.push(out);
+    }
+    for (let a = 0; a < A; a++) for (const [p0, p1] of segs[a]) {
+      for (let d = 3; d <= wMax + 1 && a + d < A; d++) {
+        const q = segs[a + d].find(([q0, q1]) => Math.min(p1, q1) - Math.max(p0, q0) >= minL); if (!q) continue;
+        const o0 = Math.max(p0, q[0]), o1 = Math.min(p1, q[1]);
+        let ink = 0, mid = false, rows = 0;
+        for (let k = a + 1; k < a + d; k++) { let c = 0; for (let b = o0; b < o1; b++) c += lines[at(k, b)]; if (c > (o1 - o0) * 0.8) mid = true; ink += c; }
+        if (mid) break; // 사이에 또 긴 선 → 이웃한 쌍이 아니다
+        for (let b = o0; b < o1; b++) for (let k = a + 1; k < a + d; k++) if (lines[at(k, b)]) { rows++; break; }
+        const r = ink / ((d - 1) * (o1 - o0));
+        if (r >= 0.15 && r <= 0.75 && rows >= (o1 - o0) * 0.8) res.push({ horiz, a0: a, a1: a + d, b0: o0, b1: o1 });
+        break; // 가장 가까운 이웃 선 하나만
+      }
+    }
+  }
+  return res;
 }
 
 // 정사각형(2r+1) 침식/팽창. 가로·세로로 나눠 창 안의 1 개수를 세서 빠르게 계산
@@ -560,7 +617,7 @@ function schematize(K, F, tExt, W, H) {
       big = mx <= Math.max(tExt, tInt * 1.5) / 2 + 2 && c.area < bw * bh * 0.5; // 사선 벽은 바운딩 박스의 절반도 안 채운다
     }
     // 꽉 찬 덩어리도 기둥만 한 크기까지 (외벽 두께의 6배 넘게 긴 것은 벽에 붙은 탁자·카운터)
-    const pillar = solid && Math.max(c.x1 - c.x0, c.y1 - c.y0) + 1 <= Math.max(tExt, tInt * 2) * 6;
+    const pillar = solid && Math.max(c.x1 - c.x0, c.y1 - c.y0) + 1 <= Math.max(tExt, tInt * 2) * 6 && c.area >= (tInt * 2) ** 2; // 내벽 두께 2배 네모보다 작은 건 조각
     if (!attached || !(pillar || big)) continue;
     for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) if (R.lab[y * W + x] === c.id) blobs[y * W + x] = 1;
   }
@@ -603,7 +660,18 @@ function connectWalls(bars, ring, W, H, gapMax, reachMax, light = null) {
     for (const end of [0, 1]) {
       const [x1, y1, x2, y2] = b.seg, ex = end ? x2 : x1, ey = end ? y2 : y1, ox = end ? x1 : x2, oy = end ? y1 : y2;
       const L = Math.hypot(ex - ox, ey - oy) || 1, ux = (ex - ox) / L, uy = (ey - oy) / L, gap = b.t / 2 + 2;
-      if (touchesEnd(b, end)) continue; // 이미 닿아 있다 (모서리에서 바깥 면에 맞춘 끝도)
+      if (touchesEnd(b, end)) { // 이미 닿아 있어도, 바로 너머(두께 2.5배 안)에 수직 벽이 또 있으면 그 벽까지 (T자로 이어지는 벽 끝이 앞 벽에서 멈추지 않게)
+        let best = null;
+        for (const o of bars) {
+          if (o === b || !axis(o) || axis(o) === ax) continue;
+          const [p0, p1] = span(o), lat = ax === 'h' ? ey : ex, along = ax === 'h' ? ex : ey, dir = ax === 'h' ? ux : uy;
+          if (lat < p0 - o.t / 2 || lat > p1 + o.t / 2) continue;
+          const dd = (line(o) - along) * dir;
+          if (dd > o.t / 2 + b.t / 2 + 2 && dd <= b.t * 2.5 + o.t / 2 && (!best || dd < best.dd)) best = { o, dd };
+        }
+        if (best) { const k = best.dd; if (end) { b.seg[2] = ex + ux * k; b.seg[3] = ey + uy * k; } else { b.seg[0] = ex + ux * k; b.seg[1] = ey + uy * k; } }
+        continue;
+      }
       // 긴 벽(1.5m 이상)은 늘릴 길을 따라 원래 도면에 선(벽 흔적)이 절반 넘게 있으면 문 폭(1.1m)까지 늘린다 (빈 통로는 0.4m 까지만)
       const inked = k => { const cx = ex + ux * k, cy = ey + uy * k, px = -uy, py = ux;
         for (let o = -b.t / 2; o <= b.t / 2; o++) { const x = Math.round(cx + px * o), y = Math.round(cy + py * o); if (x >= 0 && y >= 0 && x < W && y < H && light[y * W + x]) return true; }
@@ -682,6 +750,9 @@ function autoExtent(P) {
   const cs = P.comp.list.filter(c => c.area >= minArea).sort((a, b) => b.area - a.area);
   if (P.photo) throw new Error('도면이 아닌 것 같습니다. 벽이 그려진 평면도 이미지를 올려 주세요');
   if (!cs.length) throw new Error('벽을 찾지 못했습니다');
+  // 글자만 있는 이미지: 획 덩어리가 고만고만하게 흩어져 있다 (도면은 외벽 그물 하나가 벽 픽셀의 큰 몫)
+  const total = cs.reduce((q, c) => q + c.area, 0);
+  if (cs.length >= 8 && cs[0].area < total * 0.1) throw new Error('도면이 아닌 것 같습니다. 벽이 그려진 평면도 이미지를 올려 주세요');
   let box = [cs[0].x0, cs[0].y0, cs[0].x1, cs[0].y1], grew = true;
   const used = new Set([cs[0]]);
   while (grew) {
