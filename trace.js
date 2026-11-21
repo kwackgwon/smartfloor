@@ -181,8 +181,12 @@ function hatchWalls(lines, wall, W, H) { // lines: 연한 선까지 포함한 �
     if (!grew) break;
   }
   if (pairs.length) { // 끝 하나가 벽(넉넉한 거리)에 닿는 쌍만 벽으로
-    const wMax = Math.max(6, Math.round(S * 0.01)), near = morph(out, W, H, 2 * wMax, false);
+    const wMax = Math.max(6, Math.round(S * 0.01)), near = morph(out, W, H, 2 * wMax, false), beside = morph(out, W, H, wMax, false);
     for (const q of pairs) {
+      // 이미 찾은 벽 바로 옆(벽 두께 안)을 따라가는 쌍은 그 벽의 면·마감선이다 (새 벽이 아니다)
+      let cov = 0, tot = 0;
+      for (let b = q.b0; b < q.b1; b += 2) { tot++; const a = (q.a0 + q.a1) >> 1; if (beside[q.horiz ? a * W + b : b * W + a]) cov++; }
+      if (cov > tot * 0.5) continue;
       const ends = q.horiz ? [[q.b0, (q.a0 + q.a1) >> 1], [q.b1 - 1, (q.a0 + q.a1) >> 1]] : [[(q.a0 + q.a1) >> 1, q.b0], [(q.a0 + q.a1) >> 1, q.b1 - 1]];
       if (!ends.some(([x, y]) => near[y * W + x])) continue;
       for (let a = q.a0; a <= q.a1; a++) for (let b = q.b0; b < q.b1; b++) out[q.horiz ? a * W + b : b * W + a] = 1;

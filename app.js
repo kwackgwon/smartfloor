@@ -271,7 +271,7 @@ setMode('view'); $('undo').disabled = !undoStack.length;
 
 // 누른 자리의 벽 찾기: 선 벽(두께 + 손가락 여유) → 칠한 벽 모양(외벽 띠·기둥, 짝홀 규칙으로 안쪽인지)
 function hitTest(p) {
-  const tol = 10 / s; // 화면 10px 여유 (cm)
+  const tol = Math.min(10 / s, 30); // 화면 10px 여유, 최대 30cm (가까운 다른 벽이 잡히지 않게)
   for (let i = plan.walls.length - 1; i >= 0; i--) {
     const [x1, y1, x2, y2, t] = plan.walls[i], dx = x2 - x1, dy = y2 - y1, l = dx * dx + dy * dy;
     const k = l ? Math.max(0, Math.min(1, ((p.x - x1) * dx + (p.y - y1) * dy) / l)) : 0;
@@ -295,6 +295,8 @@ cvs.onpointerdown = e => {
   if (mode === 'erase') {
     const h = hitTest(pos(e));
     if (!h) { hover = null; draw(); return; }
+    // 터치: 미리보기(빨간 표시)가 없으니 첫 탭은 고르기만, 같은 벽을 한 번 더 누르면 지운다
+    if (e.pointerType !== 'mouse' && !sameHit(h, hover)) { hover = h; draw(); say('한 번 더 누르면 빨간 벽을 지웁니다'); return; }
     remember();
     if (h.kind === 'wall') plan.walls.splice(h.i, 1); else plan.shapes.splice(h.i, 1);
     hover = null; save(); draw(); say(h.kind === 'wall' ? '벽을 지웠습니다 (되돌리기로 복구)' : '벽 모양을 지웠습니다 (되돌리기로 복구)');
@@ -315,7 +317,7 @@ cvs.onpointermove = e => {
   else { tmp[2] = tmp[0]; tmp[3] = snap(p.y); }
   draw();
 };
-cvs.onpointerleave = () => { if (hover) { hover = null; draw(); } };
+cvs.onpointerleave = e => { if (e.pointerType === 'mouse' && hover) { hover = null; draw(); } }; // 터치는 탭마다 leave 가 와서 고른 벽을 유지
 cvs.onpointerup = () => {
   if (tmp && Math.hypot(tmp[2] - tmp[0], tmp[3] - tmp[1]) >= GRID) { const w = tmp; tmp = null; remember(); plan.walls.push(w); save(); }
   tmp = null; if (plan) draw();
