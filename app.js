@@ -100,7 +100,6 @@ async function pixels() {
 form.onsubmit = e => { e.preventDefault(); generate(); };
 async function generate() {
   if (!image) { say('도면 이미지를 먼저 올려 주세요', 'chip err'); return; }
-  if (plan && !confirm('현재 도면과 편집 내용이 새 도면으로 바뀝니다. 계속할까요?')) return;
   working(true); hideNotice();
   $('empty').hidden = true; cvs.hidden = true; $('loading').hidden = false; $('loading-text').textContent = '도면 분석 중…';
   say('도면 분석 중…', 'chip');
@@ -108,12 +107,14 @@ async function generate() {
   const t0 = Date.now();
   try {
     const px = await pixels();
-    show(traceToPlan(autoExtent(px), px, widthM())); save();
-    say(`도면 생성 완료 · ${((Date.now() - t0) / 1000).toFixed(1)}초 · AI 없이`);
+    const p = traceToPlan(autoExtent(px), px, widthM());
+    remember(); show(p); save(); // 이전 도면·편집은 되돌리기로 되살릴 수 있다
+    say(`도면 생성 완료 · ${((Date.now() - t0) / 1000).toFixed(1)}초${widthM() ? '' : ' · 가로 길이를 넣으면 실제 크기가 정확해져요'}`);
+    if (innerWidth < 800) cvs.scrollIntoView({ behavior: 'smooth', block: 'start' }); // 휴대폰: 결과로 이동
   } catch (err) {
     $('loading').hidden = true;
     if (plan) cvs.hidden = false; else $('empty').hidden = false;
-    say('도면에서 벽을 찾지 못했습니다. 벽이 또렷한 도면 이미지인지 확인해 주세요', 'chip err');
+    say(/^도면이 아닌/.test(err.message) ? err.message : '도면에서 벽을 찾지 못했습니다. 벽이 또렷한 도면 이미지인지 확인해 주세요', 'chip err');
   } finally { working(false); }
 }
 
@@ -142,7 +143,7 @@ async function refine() {
       w = await viaOpenRouter(f, orKey, onProgress, (p, st) => { pre = p; stage = st; status(); });
     }
     if (!w) throw last;
-    show(traceToPlan(w, px, widthM())); save();
+    const p = traceToPlan(w, px, widthM()); remember(); show(p); save();
     say(`AI로 다듬기 완료 · ${who} · ${Math.round((Date.now() - t0) / 1000)}초`);
   } catch (err) {
     say(`AI로 다듬지 못했어요 (${err.message})`, 'chip err');
@@ -224,9 +225,32 @@ drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
 drop.ondragleave = () => drop.classList.remove('over');
 drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); setImage(e.dataTransfer.files[0]); };
 
-// ── 편집: 드래그로 벽 추가 ─────────────────────────────
-cvs.onpointerdown = e => {
+// ── 편집: 벽 그리기 모드에서 드래그로 벽 추가 · 되돌리기 ─────
+// 기본은 보기 모드: 휴대폰에서 도면 위를 쓸어도 화면만 스크롤되고 벽이 생기지 않는다
+let drawing = false;
+const undoStack = [];
+function remember() { // 바꾸기 전 도면을 되돌리기용으로 보관 (최근 50개)
   if (!plan) return;
+  undoStack.push(JSON.stringify(plan)); if (undoStack.length > 50) undoStack.shift();
+  $('undo').disabled = false;
+}
+function undo() {
+  if (!undoStack.length) return;
+  tmp = null; show(JSON.parse(undoStack.pop())); save(); say('되돌렸습니다');
+  $('undo').disabled = !undoStack.length;
+}
+function setDrawing(on) {
+  drawing = on; $('draw').setAttribute('aria-pressed', on); $('draw').classList.toggle('on', on);
+  cvs.style.touchAction = on ? 'none' : 'pan-x pan-y'; cvs.style.cursor = on ? 'crosshair' : 'default';
+}
+$('draw').onclick = () => setDrawing(!drawing);
+$('undo').onclick = undo;
+addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); undo(); }
+});
+setDrawing(false);
+cvs.onpointerdown = e => {
+  if (!plan || !drawing) return;
   const p = pos(e), x = snap(p.x), y = snap(p.y);
   tmp = [x, y, x, y];
   cvs.setPointerCapture(e.pointerId); draw();
@@ -240,7 +264,7 @@ cvs.onpointermove = e => {
   draw();
 };
 cvs.onpointerup = () => {
-  if (tmp && Math.hypot(tmp[2] - tmp[0], tmp[3] - tmp[1]) >= GRID) plan.walls.push(tmp);
+  if (tmp && Math.hypot(tmp[2] - tmp[0], tmp[3] - tmp[1]) >= GRID) { const w = tmp; tmp = null; remember(); plan.walls.push(w); save(); }
   tmp = null; if (plan) draw();
 };
 
@@ -251,7 +275,7 @@ function download(href, name) {
 }
 $('export').onclick = () => { // Figma 플러그인 입력 형식
   if (!plan) return say('먼저 도면을 생성하세요', 'chip err');
-  download(URL.createObjectURL(new Blob([JSON.stringify(plan)], { type: 'application/json' })), 'smartfloor.json');
+  download(URL.createObjectURL(new Blob([JSON.stringify({ ...plan, v: PLAN_V, unit: 'cm' })], { type: 'application/json' })), 'smartfloor.json');
 };
 $('png').onclick = () => { // 최대 2px/cm (긴 변 4000px 이하) 해상도로 내보내기
   if (!plan) return say('먼저 도면을 생성하세요', 'chip err');

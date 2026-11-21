@@ -7,11 +7,39 @@
 // AI(Gemini·OpenRouter)를 쓰면 건물 영역·벽 위치(0~1000 정규화 좌표)·치수를 받아 글자·표제란을 더 잘 걸러 내고
 // 얇은 칸막이를 메운다 (traceToPlan 의 w). AI 없이는 autoExtent 가 건물 영역을 추정한다.
 // ── 이미지 픽셀 분석 ──
+// 읽으면서 고르게 맞춘다: ① 긴 변이 1200px 보다 작으면 키운다 (벽이 몇 px 밖에 안 되면 얇은 선 지우기에 벽까지 지워진다)
+// ② 배경(가장 흔한 밝기)이 어두우면 반전, ③ 배경이 회색·잡음이 있거나 대비가 낮으면 배경 → 흰색, 가장 진한 선 → 검정으로 늘린다
+// photo: 배경색 픽셀이 30% 도 안 되거나 유채색이 40% 를 넘으면 도면이 아닌 사진·그림으로 본다
+const MIN_SIDE = 1200;
 async function readPixels(dataURL) {
   const im = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = dataURL; });
-  const c = document.createElement('canvas'); c.width = im.width; c.height = im.height;
-  const g = c.getContext('2d'); g.drawImage(im, 0, 0);
-  return { W: im.width, H: im.height, d: g.getImageData(0, 0, im.width, im.height).data };
+  const up = Math.max(1, MIN_SIDE / Math.max(im.width, im.height)), W = Math.round(im.width * up), H = Math.round(im.height * up);
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(im, 0, 0, W, H);
+  const d = g.getImageData(0, 0, W, H).data, N = W * H;
+  const stats = () => {
+    const hist = new Float64Array(256); let colorful = 0;
+    for (let i = 0; i < N; i++) {
+      const r = d[4 * i], gg = d[4 * i + 1], b = d[4 * i + 2];
+      hist[(r + gg + b) / 3 | 0]++; if (Math.max(r, gg, b) - Math.min(r, gg, b) > 40) colorful++;
+    }
+    let bg = 0; for (let v = 1; v < 256; v++) if (hist[v] > hist[bg]) bg = v;
+    return { hist, colorful, bg };
+  };
+  let { hist, colorful, bg } = stats();
+  const invert = bg < 128;
+  if (invert) { for (let i = 0; i < d.length; i += 4) { d[i] = 255 - d[i]; d[i + 1] = 255 - d[i + 1]; d[i + 2] = 255 - d[i + 2]; } hist.reverse(); bg = 255 - bg; }
+  // 배경 봉우리의 퍼짐 (잡음): 배경보다 어두운 쪽 절반 높이까지의 폭
+  let lo = bg; while (lo > 0 && hist[lo - 1] > hist[bg] * 0.1) lo--;
+  let near = 0; for (let v = Math.max(0, lo - 4); v <= Math.min(255, 2 * bg - lo + 4); v++) near += hist[v];
+  let dark = 0, acc = 0; for (; dark < 255; dark++) { acc += hist[dark]; if (acc > N * 0.002) break; } // 가장 진한 0.2%
+  const white = lo - 4;
+  if (white < 240 && white - dark >= 60) { // 회색 배경·잡음·낮은 대비일 때만 (깨끗한 도면은 그대로)
+    const k = 255 / Math.max(1, white - dark), lut = new Uint8ClampedArray(256);
+    for (let v = 0; v < 256; v++) lut[v] = (v - dark) * k;
+    for (let i = 0; i < d.length; i += 4) { d[i] = lut[d[i]]; d[i + 1] = lut[d[i + 1]]; d[i + 2] = lut[d[i + 2]]; }
+  }
+  return { W, H, d, up, photo: near < N * 0.3 || colorful > N * 0.4 };
 }
 
 // 벽 색 고르기: 도면마다 벽 색이 다르다 (검게 칠한 CAD 도면, 연회색 #D9D9D9 로 칠한 디자인 도면 등).
@@ -51,7 +79,7 @@ function wallMasks(P) {
     light[i] = raw[i] || (av < 200 && ch < 50) ? 1 : 0;
   }
   const wall = morph(morph(raw, W, H, 2, true), W, H, 2, false);
-  return { W, H, raw, light, tone, wall: hatchWalls(light, wall, W, H) };
+  return { W, H, raw, light, tone, photo: P.photo, wall: hatchWalls(light, wall, W, H) };
 }
 
 // 해치(빗금)·여러 줄로 그린 벽: 두 선 사이를 촘촘한 빗금으로 채운 벽, 창문처럼 2~3줄로 그린 벽은 칠해진 면이 아니라서 빠진다.
@@ -67,7 +95,7 @@ function hatchWalls(lines, wall, W, H) { // lines: 연한 선까지 포함한 �
   for (let x = 0; x < W; x++) for (let y = 0; y < H;) { if (!I[y * W + x]) { y++; continue; } let e = y; while (e < H && I[e * W + x]) e++; for (let k = y; k < e; k++) runV[k * W + x] = e - y; y = e; }
   const maxT = Math.round(S * 0.02), minL = Math.round(S * 0.02);
   // 덩어리를 길이 방향 한 칸씩 잘라 두께를 잰다: 곧고 두께가 고른 칸만 벽 (곡선 가구 등이 붙어 있어도 곧은 부분은 살린다)
-  const cand = [];
+  const cand = [], hollow = [];
   for (const horiz of [true, false]) {
     const m = new Uint8Array(N);
     for (let i = 0; i < N; i++) if (I[i] && (horiz ? runH[i] >= runV[i] * 2 : runV[i] >= runH[i] * 2)) m[i] = 1;
@@ -85,6 +113,10 @@ function hatchWalls(lines, wall, W, H) { // lines: 연한 선까지 포함한 �
       const on = (a, b) => { for (let d = -1; d <= 1; d++) { const i = at(a, b + d); if (b + d >= 0 && b + d < (horiz ? H : W) && lines[i]) return 1; } return 0; };
       good.forEach((g, k) => { if (g) { eTop += on(a0 + k, lo[k]); eBot += on(a0 + k, hi[k]); } });
       if (eTop < n * 0.8 || eBot < n * 0.8) continue;
+      // 두 변 사이 속: 빗금·점무늬·가운데 줄이 있어야 벽. 속이 빈 두 줄 선(책상·부스 칸막이 외곽, 계단 난간)은 가구
+      let ink = 0, tot = 0;
+      good.forEach((g, k) => { if (g) for (let b = lo[k] + 2; b <= hi[k] - 2; b++) { tot++; if (lines[at(a0 + k, b)]) ink++; } });
+      if (tot >= n && ink < tot * 0.08) { hollow.push({ horiz, a0, a1, mid: (lo[0] + hi[0]) / 2 }); continue; }
       const cells = good.map((g, k) => g ? [a0 + k, lo[k], hi[k]] : null).filter(Boolean);
       const mid = cells.reduce((q, c) => q + (c[1] + c[2]) / 2, 0) / cells.length; // 중심선 위치 (두께 방향)
       cand.push({ id: c.id, lab, cells, horiz, mid, a0: cells[0][0], a1: cells[cells.length - 1][0] });
@@ -99,11 +131,19 @@ function hatchWalls(lines, wall, W, H) { // lines: 연한 선까지 포함한 �
     return false; };
   // 같은 줄에서 문 폭 이하의 틈을 두고 이어지는 받아들인 벽이 있으면 이어진 것으로 본다 (벽 - 문 - 벽)
   // 단, 건물 안에 있을 때만: 가운데에서 위·아래·왼쪽·오른쪽으로 가면 모두 칠해진 벽을 만나야 한다 (건물 밖 치수선 제외)
-  const enclosed = c => {
+  const enclosed = (c, M = wall) => {
+    const k0 = Math.max(6, Math.ceil(Math.max(...c.cells.map(e => e[2] - e[1])) / 2) + 3); // 자기 두께 밖에서부터
     const am = Math.round((c.a0 + c.a1) / 2), bm = Math.round(c.mid), [x, y] = c.horiz ? [am, bm] : [bm, am];
     return [[1, 0], [-1, 0], [0, 1], [0, -1]].every(([dx, dy]) => {
-      for (let k = 6; k < S; k++) { const xx = x + dx * k, yy = y + dy * k; if (xx < 0 || yy < 0 || xx >= W || yy >= H) return false; if (wall[yy * W + xx]) return true; }
+      for (let k = k0; k < S; k++) { const xx = x + dx * k, yy = y + dy * k; if (xx < 0 || yy < 0 || xx >= W || yy >= H) return false; if (M[yy * W + xx]) return true; }
       return false; }); };
+  const withHatch = wall.slice(); cand.forEach(c => paint(c, withHatch)); // 빗금 외벽도 벽으로 본 마스크
+  // 책상 줄: 건물 안에서 속 빈 칸막이(가구)가 3개 이상 수직으로 붙은 긴 막대는 책상 줄의 테두리 (벽이 아니다. 외벽은 창가 칸막이가 붙어도 둔다)
+  for (let i = cand.length - 1; i >= 0; i--) {
+    const c = cand[i], half = (c.cells.reduce((q, e) => q + e[2] - e[1], 0) / c.cells.length) / 2 + 5;
+    const n = hollow.filter(h => h.horiz !== c.horiz && h.mid >= c.a0 - 3 && h.mid <= c.a1 + 3 && (Math.abs(h.a0 - c.mid) <= half || Math.abs(h.a1 - c.mid) <= half)).length;
+    if (n >= 3 && enclosed(c, withHatch)) cand.splice(i, 1);
+  }
   const gapMax = S * 0.08, inLine = c => enclosed(c) && [...acc].some(d => d.horiz === c.horiz && Math.abs(d.mid - c.mid) <= 3 && Math.max(d.a0 - c.a1, c.a0 - d.a1) <= gapMax);
   for (let pass = 0; pass < 6; pass++) {
     const near = morph(out, W, H, 3, false);
@@ -467,6 +507,9 @@ function schematize(K, F, tExt, W, H) {
   const ts = bars.flatMap(b => Array(Math.max(1, Math.round(Math.hypot(b.seg[2] - b.seg[0], b.seg[3] - b.seg[1]) / 10))).fill(b.t)).sort((a, b) => a - b);
   const tInt = Math.min(tExt, Math.max(3, Math.round(S * 0.004), ts.length ? ts[ts.length >> 1] : tExt * 0.6));
   bars.forEach(b => { b.t = tInt; });
+  // 외벽은 내벽보다 확실히 두껍게 (좌석 도면: 외벽 ≈ 내벽의 1.8배 이상). 얇게 그린 도면이면 안쪽으로 띠를 넓힌다
+  const tE = Math.max(tExt, Math.round(tInt * 1.8));
+  if (tE > tExt) for (let i = 0; i < N; i++) if (F2[i] && D[i] <= tE) ring[i] = 1;
   for (const horiz of [true, false]) {
     const k = horiz ? 1 : 0, grp = bars.filter(b => b.horiz === horiz).sort((a, b) => a.seg[k] - b.seg[k]);
     for (let i = 0; i < grp.length;) {
@@ -503,7 +546,7 @@ function schematize(K, F, tExt, W, H) {
 
 // 벽 잇기: ① 같은 줄(가로·세로)의 막대가 gapMax 이하 틈으로 떨어져 있으면 하나로 합친다 (문 자리·끊긴 벽)
 // ② 다른 벽에 닿지 않은 막대 끝은, 그 방향으로 reachMax 안에 벽(다른 막대·외벽 띠)이 있으면 그 벽까지 늘린다
-// 마지막에 joinEnds 로 끝을 만나는 벽의 바깥 면에 맞춘다
+// ③ 양 끝이 모두 떠 있는 짧은 막대(4m 미만)는 지운다. 마지막에 joinEnds 로 끝을 만나는 벽의 바깥 면에 맞춘다
 function connectWalls(bars, ring, W, H, gapMax, reachMax) {
   const axis = b => Math.abs(b.seg[1] - b.seg[3]) < 0.5 ? 'h' : Math.abs(b.seg[0] - b.seg[2]) < 0.5 ? 'v' : '';
   const line = b => axis(b) === 'h' ? b.seg[1] : b.seg[0], span = b => axis(b) === 'h' ? [Math.min(b.seg[0], b.seg[2]), Math.max(b.seg[0], b.seg[2])] : [Math.min(b.seg[1], b.seg[3]), Math.max(b.seg[1], b.seg[3])];
@@ -533,11 +576,25 @@ function connectWalls(bars, ring, W, H, gapMax, reachMax) {
       const [x1, y1, x2, y2] = b.seg, ex = end ? x2 : x1, ey = end ? y2 : y1, ox = end ? x1 : x2, oy = end ? y1 : y2;
       const L = Math.hypot(ex - ox, ey - oy) || 1, ux = (ex - ox) / L, uy = (ey - oy) / L, gap = b.t / 2 + 2;
       if (hitWall(ex + ux * gap, ey + uy * gap, b)) continue; // 이미 닿아 있다
-      for (let k = gap; k <= reachMax; k += 1) if (hitWall(ex + ux * k, ey + uy * k, b)) {
+      const reach = L >= reachMax * 3.75 ? reachMax * 2.75 : reachMax; // 긴 벽(1.5m 이상)은 문 폭(1.1m)까지, 짧은 막대(칸막이)는 조금만
+      for (let k = gap; k <= reach; k += 1) if (hitWall(ex + ux * k, ey + uy * k, b)) {
         if (end) { b.seg[2] = ex + ux * k; b.seg[3] = ey + uy * k; } else { b.seg[0] = ex + ux * k; b.seg[1] = ey + uy * k; }
         break;
       }
     }
+  }
+  // ③ 떠 있는 막대 지우기: 양 끝 모두 어떤 벽에도 닿지 않으면 좌석 구분선·가구 선이다 (벽은 다른 벽에 이어진다)
+  const touchesEnd = (b, end) => {
+    const [x1, y1, x2, y2] = b.seg, ex = end ? x2 : x1, ey = end ? y2 : y1, L = Math.hypot(x2 - x1, y2 - y1) || 1;
+    const ux = (end ? x2 - x1 : x1 - x2) / L, uy = (end ? y2 - y1 : y1 - y2) / L;
+    for (let k = -b.t; k <= b.t / 2 + 3; k++) if (hitWall(ex + ux * k, ey + uy * k, b)) return true;
+    return false; };
+  for (let i = bars.length - 1; i >= 0; i--) {
+    const b = bars[i], L = Math.hypot(b.seg[2] - b.seg[0], b.seg[3] - b.seg[1]);
+    // 옆으로 붙은 벽(중간에서 다른 막대가 닿음)도 이어진 것으로 본다
+    const mid = [0.25, 0.5, 0.75].some(f => { const x = b.seg[0] + (b.seg[2] - b.seg[0]) * f, y = b.seg[1] + (b.seg[3] - b.seg[1]) * f;
+      return bars.some(o => o !== b && Math.min(Math.hypot(o.seg[0] - x, o.seg[1] - y), Math.hypot(o.seg[2] - x, o.seg[3] - y)) <= b.t + o.t); });
+    if (!touchesEnd(b, 0) && !touchesEnd(b, 1) && !mid && L < gapMax * 3) bars.splice(i, 1);
   }
   joinEnds(bars);
   return bars;
@@ -593,6 +650,7 @@ function autoExtent(P) {
   const { W, H } = P, S = Math.max(W, H), minArea = (S * 0.007) ** 2, gap = S * 0.05;
   P.comp = P.comp || components(P.wall, W, H);
   const cs = P.comp.list.filter(c => c.area >= minArea).sort((a, b) => b.area - a.area);
+  if (P.photo) throw new Error('도면이 아닌 것 같습니다. 벽이 그려진 평면도 이미지를 올려 주세요');
   if (!cs.length) throw new Error('벽을 찾지 못했습니다');
   let box = [cs[0].x0, cs[0].y0, cs[0].x1, cs[0].y1], grew = true;
   const used = new Set([cs[0]]);
