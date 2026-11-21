@@ -7,10 +7,10 @@
 // AI(Gemini·OpenRouter)를 쓰면 건물 영역·벽 위치(0~1000 정규화 좌표)·치수를 받아 글자·표제란을 더 잘 걸러 내고
 // 얇은 칸막이를 메운다 (traceToPlan 의 w). AI 없이는 autoExtent 가 건물 영역을 추정한다.
 // ── 이미지 픽셀 분석 ──
-// 읽으면서 고르게 맞춘다: ① 긴 변이 1200px 보다 작으면 키운다 (벽이 몇 px 밖에 안 되면 얇은 선 지우기에 벽까지 지워진다)
+// 읽으면서 고르게 맞춘다: ① 긴 변이 1600px 보다 작으면 키운다 (벽이 몇 px 밖에 안 되면 얇은 선 지우기에 벽까지 지워진다)
 // ② 배경(가장 흔한 밝기)이 어두우면 반전, ③ 배경이 회색·잡음이 있거나 대비가 낮으면 배경 → 흰색, 가장 진한 선 → 검정으로 늘린다
 // photo: 배경색 픽셀이 30% 도 안 되거나 유채색이 40% 를 넘으면 도면이 아닌 사진·그림으로 본다
-const MIN_SIDE = 1200;
+const MIN_SIDE = 1600;
 async function readPixels(dataURL) {
   const im = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = dataURL; });
   const up = Math.max(1, MIN_SIDE / Math.max(im.width, im.height)), W = Math.round(im.width * up), H = Math.round(im.height * up);
@@ -27,6 +27,19 @@ async function readPixels(dataURL) {
     return { hist, colorful, bg };
   };
   let { hist, colorful, bg } = stats();
+  // 스캔 잡음: 이웃 픽셀 밝기 차이의 중앙값(깨끗한 도면은 0)이 2 를 넘으면 5x5 중앙값 필터 (선 가장자리는 지키고 잡음만 지운다)
+  { const diffs = new Uint32Array(256);
+    for (let i = 0; i < N - 1; i += 7) { const a = (d[4 * i] + d[4 * i + 1] + d[4 * i + 2]) / 3, b = (d[4 * i + 4] + d[4 * i + 5] + d[4 * i + 6]) / 3; diffs[Math.min(255, Math.abs(a - b) | 0)]++; }
+    let cum = 0, med = 0, tot = 0; for (const v of diffs) tot += v; for (; med < 255; med++) { cum += diffs[med]; if (cum >= tot / 2) break; }
+    if (med > 2 && colorful < N * 0.05) {
+      const L = new Uint8Array(N); for (let i = 0; i < N; i++) L[i] = (d[4 * i] + d[4 * i + 1] + d[4 * i + 2]) / 3;
+      const win = new Uint8Array(25);
+      for (let y = 2; y < H - 2; y++) for (let x = 2; x < W - 2; x++) {
+        let n = 0; for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) win[n++] = L[(y + dy) * W + x + dx];
+        win.sort(); const v = win[12], k = 4 * (y * W + x); d[k] = d[k + 1] = d[k + 2] = v;
+      }
+      ({ hist, colorful, bg } = stats());
+    } }
   const invert = bg < 128;
   if (invert) { for (let i = 0; i < d.length; i += 4) { d[i] = 255 - d[i]; d[i + 1] = 255 - d[i + 1]; d[i + 2] = 255 - d[i + 2]; } hist.reverse(); bg = 255 - bg; }
   // 배경 봉우리의 퍼짐 (잡음): 배경보다 어두운 쪽 절반 높이까지의 폭
@@ -537,8 +550,18 @@ function schematize(K, F, tExt, W, H) {
     let attached = false;
     for (let y = c.y0; y <= c.y1 && !attached; y++) for (let x = c.x0; x <= c.x1; x++) if (R.lab[y * W + x] === c.id && touch[y * W + x]) { attached = true; break; }
     // 꽉 찬 네모(벽에 붙은 기둥·벽 끝)나 큰 덩어리(사선 벽)만: 화분·가구처럼 들쭉날쭉한 작은 것은 뺀다
-    const solid = c.area >= (c.x1 - c.x0 + 1) * (c.y1 - c.y0 + 1) * 0.75, big = c.area >= (tInt * 5) ** 2;
-    if (!attached || !(solid || big)) continue;
+    const solid = c.area >= (c.x1 - c.x0 + 1) * (c.y1 - c.y0 + 1) * 0.75;
+    let big = c.area >= (tInt * 5) ** 2;
+    if (solid) big = false; // 꽉 찬 덩어리는 아래 기둥 크기 검사로만
+    if (big) { // 큰 덩어리는 벽처럼 가늘 때만 (사선 벽). 두툼한 톱니 덩어리는 벽에 붙은 책상 줄 같은 가구
+      const bw = c.x1 - c.x0 + 1, bh = c.y1 - c.y0 + 1, sub = new Uint8Array(bw * bh);
+      for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) if (R.lab[y * W + x] === c.id) sub[(y - c.y0) * bw + x - c.x0] = 1;
+      const Dd = distOut(sub, bw, bh); let mx = 0; for (let i = 0; i < bw * bh; i++) if (Dd[i] > mx) mx = Dd[i];
+      big = mx <= Math.max(tExt, tInt * 1.5) / 2 + 2 && c.area < bw * bh * 0.5; // 사선 벽은 바운딩 박스의 절반도 안 채운다
+    }
+    // 꽉 찬 덩어리도 기둥만 한 크기까지 (외벽 두께의 6배 넘게 긴 것은 벽에 붙은 탁자·카운터)
+    const pillar = solid && Math.max(c.x1 - c.x0, c.y1 - c.y0) + 1 <= Math.max(tExt, tInt * 2) * 6;
+    if (!attached || !(pillar || big)) continue;
     for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) if (R.lab[y * W + x] === c.id) blobs[y * W + x] = 1;
   }
   return { ring, bars, blobs, F2 };
@@ -547,7 +570,7 @@ function schematize(K, F, tExt, W, H) {
 // 벽 잇기: ① 같은 줄(가로·세로)의 막대가 gapMax 이하 틈으로 떨어져 있으면 하나로 합친다 (문 자리·끊긴 벽)
 // ② 다른 벽에 닿지 않은 막대 끝은, 그 방향으로 reachMax 안에 벽(다른 막대·외벽 띠)이 있으면 그 벽까지 늘린다
 // ③ 양 끝이 모두 떠 있는 짧은 막대(4m 미만)는 지운다. 마지막에 joinEnds 로 끝을 만나는 벽의 바깥 면에 맞춘다
-function connectWalls(bars, ring, W, H, gapMax, reachMax) {
+function connectWalls(bars, ring, W, H, gapMax, reachMax, light = null) {
   const axis = b => Math.abs(b.seg[1] - b.seg[3]) < 0.5 ? 'h' : Math.abs(b.seg[0] - b.seg[2]) < 0.5 ? 'v' : '';
   const line = b => axis(b) === 'h' ? b.seg[1] : b.seg[0], span = b => axis(b) === 'h' ? [Math.min(b.seg[0], b.seg[2]), Math.max(b.seg[0], b.seg[2])] : [Math.min(b.seg[1], b.seg[3]), Math.max(b.seg[1], b.seg[3])];
   // ① 같은 줄 합치기
@@ -570,13 +593,25 @@ function connectWalls(bars, ring, W, H, gapMax, reachMax) {
     const [x1, y1, x2, y2] = o.seg, dx = x2 - x1, dy = y2 - y1, l = dx * dx + dy * dy, k = l ? Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / l)) : 0;
     return Math.hypot(x - (x1 + k * dx), y - (y1 + k * dy)) <= o.t / 2 + 1; });
   const hitWall = (x, y, self) => onRing(x, y) || onBar(x, y, self);
+  const touchesEnd = (b, end) => {
+    const [x1, y1, x2, y2] = b.seg, ex = end ? x2 : x1, ey = end ? y2 : y1, L = Math.hypot(x2 - x1, y2 - y1) || 1;
+    const ux = (end ? x2 - x1 : x1 - x2) / L, uy = (end ? y2 - y1 : y1 - y2) / L;
+    for (let k = -b.t; k <= b.t / 2 + 3; k++) if (hitWall(ex + ux * k, ey + uy * k, b)) return true;
+    return false; };
   for (const b of bars) {
     const ax = axis(b); if (!ax) continue;
     for (const end of [0, 1]) {
       const [x1, y1, x2, y2] = b.seg, ex = end ? x2 : x1, ey = end ? y2 : y1, ox = end ? x1 : x2, oy = end ? y1 : y2;
       const L = Math.hypot(ex - ox, ey - oy) || 1, ux = (ex - ox) / L, uy = (ey - oy) / L, gap = b.t / 2 + 2;
-      if (hitWall(ex + ux * gap, ey + uy * gap, b)) continue; // 이미 닿아 있다
-      const reach = L >= reachMax * 3.75 ? reachMax * 2.75 : reachMax; // 긴 벽(1.5m 이상)은 문 폭(1.1m)까지, 짧은 막대(칸막이)는 조금만
+      if (touchesEnd(b, end)) continue; // 이미 닿아 있다 (모서리에서 바깥 면에 맞춘 끝도)
+      // 긴 벽(1.5m 이상)은 늘릴 길을 따라 원래 도면에 선(벽 흔적)이 절반 넘게 있으면 문 폭(1.1m)까지 늘린다 (빈 통로는 0.4m 까지만)
+      const inked = k => { const cx = ex + ux * k, cy = ey + uy * k, px = -uy, py = ux;
+        for (let o = -b.t / 2; o <= b.t / 2; o++) { const x = Math.round(cx + px * o), y = Math.round(cy + py * o); if (x >= 0 && y >= 0 && x < W && y < H && light[y * W + x]) return true; }
+        return false; };
+      let reach = reachMax;
+      if (light && L >= reachMax * 3.75) { let hit = 0, tot = 0, far = reachMax * 2.75;
+        for (let k = gap; k <= far; k++) { if (hitWall(ex + ux * k, ey + uy * k, b)) break; tot++; if (inked(k)) hit++; }
+        if (tot && hit >= tot * 0.5) reach = far; }
       for (let k = gap; k <= reach; k += 1) if (hitWall(ex + ux * k, ey + uy * k, b)) {
         if (end) { b.seg[2] = ex + ux * k; b.seg[3] = ey + uy * k; } else { b.seg[0] = ex + ux * k; b.seg[1] = ey + uy * k; }
         break;
@@ -584,11 +619,6 @@ function connectWalls(bars, ring, W, H, gapMax, reachMax) {
     }
   }
   // ③ 떠 있는 막대 지우기: 양 끝 모두 어떤 벽에도 닿지 않으면 좌석 구분선·가구 선이다 (벽은 다른 벽에 이어진다)
-  const touchesEnd = (b, end) => {
-    const [x1, y1, x2, y2] = b.seg, ex = end ? x2 : x1, ey = end ? y2 : y1, L = Math.hypot(x2 - x1, y2 - y1) || 1;
-    const ux = (end ? x2 - x1 : x1 - x2) / L, uy = (end ? y2 - y1 : y1 - y2) / L;
-    for (let k = -b.t; k <= b.t / 2 + 3; k++) if (hitWall(ex + ux * k, ey + uy * k, b)) return true;
-    return false; };
   for (let i = bars.length - 1; i >= 0; i--) {
     const b = bars[i], L = Math.hypot(b.seg[2] - b.seg[0], b.seg[3] - b.seg[1]);
     // 옆으로 붙은 벽(중간에서 다른 막대가 닿음)도 이어진 것으로 본다
@@ -707,7 +737,7 @@ function traceToPlan(w, P, widthM = 0) {
   let fx0 = W, fx1 = 0;
   for (let i = 0; i < W * H; i++) if (SC.F2[i]) { const x = i % W; if (x < fx0) fx0 = x; if (x > fx1) fx1 = x; }
   const knownW = +widthM > 0 ? +widthM : +w.width_mm > 500 ? +w.width_mm / 1000 : 15, pxPerM = fx1 > fx0 ? (fx1 - fx0 + 1) / knownW : S / 15;
-  bars = connectWalls(bars, SC.ring, W, H, pxPerM * 1.3, pxPerM * 0.4);
+  bars = connectWalls(bars, SC.ring, W, H, pxPerM * 1.3, pxPerM * 0.4, P.light);
 
   // 4. 범위·축척: 단순화한 건물 발자국 = 건물 외곽
   let x0 = W, y0 = H, x1 = 0, y1 = 0;
