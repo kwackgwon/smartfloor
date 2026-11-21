@@ -42,10 +42,16 @@ function draw(scale = s * (devicePixelRatio || 1), ratio = devicePixelRatio || 1
     sh.forEach(l => { l.forEach(([x, y], i) => i ? P.lineTo(x, y) : P.moveTo(x, y)); P.closePath(); });
     g.fill(P, 'evenodd');
   });
+  if (hover) { // 지우기 모드: 지울 벽을 빨갛게
+    g.globalAlpha = 0.55; g.strokeStyle = g.fillStyle = '#ef4444';
+    if (hover.kind === 'wall' && plan.walls[hover.i]) { const w = plan.walls[hover.i]; g.lineCap = w[4] ? 'butt' : 'square'; g.lineWidth = w[4] || plan.wallThickness; g.beginPath(); g.moveTo(w[0], w[1]); g.lineTo(w[2], w[3]); g.stroke(); }
+    if (hover.kind === 'shape' && plan.shapes[hover.i]) { const P = new Path2D(); plan.shapes[hover.i].forEach(l => { l.forEach(([x, y], i) => i ? P.lineTo(x, y) : P.moveTo(x, y)); P.closePath(); }); g.fill(P, 'evenodd'); }
+    g.globalAlpha = 1;
+  }
 }
 
 function show(p) {
-  plan = p; tmp = null;
+  plan = p; tmp = null; hover = null;
   $('empty').hidden = $('loading').hidden = true; cvs.hidden = false;
   layout();
 }
@@ -225,7 +231,7 @@ drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
 drop.ondragleave = () => drop.classList.remove('over');
 drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); setImage(e.dataTransfer.files[0]); };
 
-// ── 편집: 벽 그리기 모드에서 드래그로 벽 추가 · 되돌리기 ─────
+// ── 편집: 벽 그리기(드래그로 추가) · 벽 지우기(누른 벽 삭제) · 되돌리기 ─────
 // 기본은 보기 모드: 휴대폰에서 도면 위를 쓸어도 화면만 스크롤되고 벽이 생기지 않는다
 let drawing = false;
 const undoStack = [];
@@ -244,30 +250,72 @@ function undo() {
   try { undoStack.length ? localStorage.setItem(UNDO_KEY, undoStack[undoStack.length - 1]) : localStorage.removeItem(UNDO_KEY); } catch (e) { /* 저장소 사용 불가 */ }
   $('undo').disabled = !undoStack.length;
 }
-function setDrawing(on) {
-  drawing = on; $('draw').setAttribute('aria-pressed', on); $('draw').classList.toggle('on', on);
-  cvs.style.touchAction = on ? 'none' : 'pan-x pan-y'; cvs.style.cursor = on ? 'crosshair' : 'default';
+// 모드: 'view' (보기, 기본) · 'draw' (벽 그리기) · 'erase' (벽 지우기: 누른 벽 하나를 지운다)
+let mode = 'view', hover = null; // hover: 지우기 모드에서 가리킨 벽 { kind: 'wall'|'shape', i }
+function setMode(m) {
+  mode = m; drawing = m === 'draw'; hover = null; tmp = null;
+  for (const [id, on] of [['draw', m === 'draw'], ['erase', m === 'erase']]) { $(id).setAttribute('aria-pressed', on); $(id).classList.toggle('on', on); }
+  cvs.style.touchAction = m === 'view' ? 'pan-x pan-y' : 'none';
+  cvs.style.cursor = m === 'draw' ? 'crosshair' : m === 'erase' ? 'pointer' : 'default';
+  if (plan) draw();
 }
-$('draw').onclick = () => setDrawing(!drawing);
+const setDrawing = on => setMode(on ? 'draw' : 'view');
+$('draw').onclick = () => setMode(mode === 'draw' ? 'view' : 'draw');
+$('erase').onclick = () => setMode(mode === 'erase' ? 'view' : 'erase');
 $('undo').onclick = undo;
 addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); undo(); }
+  if (e.key === 'Escape' && mode !== 'view') setMode('view');
 });
-setDrawing(false); $('undo').disabled = !undoStack.length;
+setMode('view'); $('undo').disabled = !undoStack.length;
+
+// 누른 자리의 벽 찾기: 선 벽(두께 + 손가락 여유) → 칠한 벽 모양(외벽 띠·기둥, 짝홀 규칙으로 안쪽인지)
+function hitTest(p) {
+  const tol = 10 / s; // 화면 10px 여유 (cm)
+  for (let i = plan.walls.length - 1; i >= 0; i--) {
+    const [x1, y1, x2, y2, t] = plan.walls[i], dx = x2 - x1, dy = y2 - y1, l = dx * dx + dy * dy;
+    const k = l ? Math.max(0, Math.min(1, ((p.x - x1) * dx + (p.y - y1) * dy) / l)) : 0;
+    if (Math.hypot(p.x - (x1 + k * dx), p.y - (y1 + k * dy)) <= (t || plan.wallThickness) / 2 + tol) return { kind: 'wall', i };
+  }
+  const shapes = plan.shapes || [];
+  for (let i = shapes.length - 1; i >= 0; i--) {
+    let inside = false;
+    for (const loop of shapes[i]) for (let a = 0, b = loop.length - 1; a < loop.length; b = a++) {
+      const [xa, ya] = loop[a], [xb, yb] = loop[b];
+      if ((ya > p.y) !== (yb > p.y) && p.x < (xb - xa) * (p.y - ya) / (yb - ya) + xa) inside = !inside;
+    }
+    if (inside) return { kind: 'shape', i };
+  }
+  return null;
+}
+const sameHit = (a, b) => (!a && !b) || (a && b && a.kind === b.kind && a.i === b.i);
+
 cvs.onpointerdown = e => {
-  if (!plan || !drawing) return;
+  if (!plan) return;
+  if (mode === 'erase') {
+    const h = hitTest(pos(e));
+    if (!h) { hover = null; draw(); return; }
+    remember();
+    if (h.kind === 'wall') plan.walls.splice(h.i, 1); else plan.shapes.splice(h.i, 1);
+    hover = null; save(); draw(); say(h.kind === 'wall' ? '벽을 지웠습니다 (되돌리기로 복구)' : '벽 모양을 지웠습니다 (되돌리기로 복구)');
+    return;
+  }
+  if (!drawing) return;
   const p = pos(e), x = snap(p.x), y = snap(p.y);
   tmp = [x, y, x, y];
   cvs.setPointerCapture(e.pointerId); draw();
 };
 cvs.onpointermove = e => {
-  if (!plan || !tmp) return;
+  if (!plan) return;
+  if (mode === 'erase') { const h = e.pointerType === 'mouse' ? hitTest(pos(e)) : null; if (!sameHit(h, hover)) { hover = h; draw(); } return; }
+  if (!tmp) return;
   const p = pos(e);
   if (e.shiftKey) { tmp[2] = snap(p.x); tmp[3] = snap(p.y); } // 수평/수직으로 정렬 (Shift 를 누르면 사선)
   else if (Math.abs(p.x - tmp[0]) >= Math.abs(p.y - tmp[1])) { tmp[2] = snap(p.x); tmp[3] = tmp[1]; }
   else { tmp[2] = tmp[0]; tmp[3] = snap(p.y); }
   draw();
 };
+cvs.onpointerleave = () => { if (hover) { hover = null; draw(); } };
 cvs.onpointerup = () => {
   if (tmp && Math.hypot(tmp[2] - tmp[0], tmp[3] - tmp[1]) >= GRID) { const w = tmp; tmp = null; remember(); plan.walls.push(w); save(); }
   tmp = null; if (plan) draw();
@@ -286,7 +334,7 @@ $('png').onclick = () => { // 최대 2px/cm (긴 변 4000px 이하) 해상도로
   if (!plan) return say('먼저 도면을 생성하세요', 'chip err');
   const [w, h] = [cvs.width, cvs.height], W = plan.width + 2 * PAD, H = plan.height + 2 * PAD, k = Math.min(4000 / W, 4000 / H, 2);
   cvs.width = Math.round(W * k); cvs.height = Math.round(H * k);
-  draw(k, 1.5); download(cvs.toDataURL('image/png'), 'smartfloor.png');
+  const hv = hover; hover = null; draw(k, 1.5); download(cvs.toDataURL('image/png'), 'smartfloor.png'); hover = hv;
   cvs.width = w; cvs.height = h; draw();
 };
 

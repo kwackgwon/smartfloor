@@ -694,6 +694,32 @@ function connectWalls(bars, ring, W, H, gapMax, reachMax, light = null) {
       return bars.some(o => o !== b && Math.min(Math.hypot(o.seg[0] - x, o.seg[1] - y), Math.hypot(o.seg[2] - x, o.seg[3] - y)) <= b.t + o.t); });
     if (!touchesEnd(b, 0) && !touchesEnd(b, 1) && !mid && L < gapMax * 3) bars.splice(i, 1);
   }
+  // ④ 좌석 칸막이 지우기: 한쪽 끝만 벽에 붙은 1.5m 미만의 짧은 막대가 같은 방향·비슷한 길이로 3개 이상
+  //    일정한 간격(0.5~2.5m, 좌석 폭)으로 늘어서 있으면 좌석 사이 칸막이다 (좌석 도면에는 방을 나누는 벽만 남긴다)
+  const pxM = gapMax / 1.3, stubs = [];
+  for (const b of bars) {
+    const ax = axis(b), [s0, s1] = ax ? span(b) : [0, 0];
+    if (!ax || s1 - s0 >= pxM * 1.5) continue;
+    const t0 = touchesEnd(b, 0), t1 = touchesEnd(b, 1);
+    if (t0 === t1) continue;
+    const base = (ax === 'h' ? (t0 ? b.seg[0] : b.seg[2]) : (t0 ? b.seg[1] : b.seg[3])); // 벽에 붙은 쪽 끝 위치
+    stubs.push({ b, ax, L: s1 - s0, base, side: t0 ? 0 : 1, pos: line(b) });
+  }
+  const drop = new Set();
+  for (const s of stubs) {
+    if (drop.has(s.b)) continue;
+    const grp = stubs.filter(o => o.ax === s.ax && o.side === s.side && Math.abs(o.base - s.base) <= Math.max(s.b.t, o.b.t) * 2 && Math.abs(o.L - s.L) <= Math.max(s.L, o.L) * 0.25)
+      .sort((p, q) => p.pos - q.pos);
+    // 일정한 간격으로 이어진 묶음 찾기
+    let run = [grp[0]];
+    const flush = () => { if (run.length >= 3) run.forEach(o => drop.add(o.b)); };
+    for (let k = 1; k < grp.length; k++) {
+      const g = grp[k].pos - grp[k - 1].pos;
+      if (g >= pxM * 0.5 && g <= pxM * 2.5) run.push(grp[k]); else { flush(); run = [grp[k]]; }
+    }
+    flush();
+  }
+  for (let i = bars.length - 1; i >= 0; i--) if (drop.has(bars[i])) bars.splice(i, 1);
   joinEnds(bars);
   return bars;
 }
