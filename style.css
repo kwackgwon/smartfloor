@@ -92,7 +92,8 @@ button:disabled { opacity: .5; cursor: not-allowed; }
   border-bottom: 1px solid var(--line); background: linear-gradient(90deg, rgba(37,99,235,.06), rgba(99,102,241,.06));
 }
 .hint { font-size: 13px; color: var(--muted); }
-.grp { display: flex; gap: 8px; }
+.grp { display: flex; flex-wrap: wrap; gap: 8px; }
+.grp button { white-space: nowrap; }
 .ghost, .primary { border-radius: 10px; padding: 7px 14px; border: 1px solid var(--line); background: var(--card); color: var(--text); }
 .ghost:hover { border-color: var(--indigo); color: var(--indigo); }
 .ghost.on { border-color: var(--indigo); color: #fff; background: var(--indigo); }
@@ -112,4 +113,8 @@ canvas { max-width: 100%; border-radius: 8px; background: #fff; box-shadow: 0 2p
   .wrap { grid-template-columns: 1fr; }
   .panel { position: static; }
   .stage { min-height: 360px; }
+}
+@media (max-width: 520px) {
+  .grp button { padding: 7px 10px; font-size: 13px; }
+  .hint .kbd { display: none; } /* 휴대폰: Shift 안내 숨김 */
 }

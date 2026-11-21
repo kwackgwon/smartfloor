@@ -229,14 +229,19 @@ drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); setImage
 // 기본은 보기 모드: 휴대폰에서 도면 위를 쓸어도 화면만 스크롤되고 벽이 생기지 않는다
 let drawing = false;
 const undoStack = [];
+// 새로고침해도 다시 생성하기 전 도면 하나는 되살릴 수 있게 가장 최근 것만 브라우저에 보관한다
+const UNDO_KEY = KEY + '-undo';
+try { const u = localStorage.getItem(UNDO_KEY); if (u) undoStack.push(u); } catch (e) { /* 저장소 사용 불가 */ }
 function remember() { // 바꾸기 전 도면을 되돌리기용으로 보관 (최근 50개)
   if (!plan) return;
   undoStack.push(JSON.stringify(plan)); if (undoStack.length > 50) undoStack.shift();
+  try { localStorage.setItem(UNDO_KEY, undoStack[undoStack.length - 1]); } catch (e) { /* 저장소 사용 불가 */ }
   $('undo').disabled = false;
 }
 function undo() {
   if (!undoStack.length) return;
-  tmp = null; show(JSON.parse(undoStack.pop())); save(); say('되돌렸습니다');
+  tmp = null; show({ ...JSON.parse(undoStack.pop()) }); save(); say('되돌렸습니다');
+  try { undoStack.length ? localStorage.setItem(UNDO_KEY, undoStack[undoStack.length - 1]) : localStorage.removeItem(UNDO_KEY); } catch (e) { /* 저장소 사용 불가 */ }
   $('undo').disabled = !undoStack.length;
 }
 function setDrawing(on) {
@@ -248,7 +253,7 @@ $('undo').onclick = undo;
 addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); undo(); }
 });
-setDrawing(false);
+setDrawing(false); $('undo').disabled = !undoStack.length;
 cvs.onpointerdown = e => {
   if (!plan || !drawing) return;
   const p = pos(e), x = snap(p.x), y = snap(p.y);
