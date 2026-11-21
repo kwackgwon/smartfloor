@@ -1,8 +1,7 @@
 // SmartFloor 이미지 분석: 도면 이미지의 픽셀만으로 벽 도면을 만든다 (AI 없이 동작, 무료·한도 없음)
 // 결과 plan (단위 cm): { width, height, wallThickness,
 //   walls: [[x1,y1,x2,y2,두께?]]          선으로 된 벽 (두께가 없으면 wallThickness)
-//   shapes: [[고리, 고리, ...]]             칠해진 벽 모양. 고리 = [[x,y],...], 구멍 포함 evenodd 로 채운다
-//   doors: [{ x, y, u, n, r }] }           문: 경첩 위치, 문 폭 방향·여는 쪽 단위 벡터, 반지름
+//   shapes: [[고리, 고리, ...]] }           칠해진 벽 모양. 고리 = [[x,y],...], 구멍 포함 evenodd 로 채운다
 //
 // 벽 모양은 업로드한 도면 이미지의 벽 픽셀을 그대로 다각형으로 옮긴다 (벽 색은 도면에서 자동으로 고른다).
 // AI(Gemini·OpenRouter)를 쓰면 건물 영역·벽 위치(0~1000 정규화 좌표)·치수를 받아 글자·표제란을 더 잘 걸러 내고
@@ -499,57 +498,49 @@ function schematize(K, F, tExt, W, H) {
     if (!attached || !(solid || big)) continue;
     for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) if (R.lab[y * W + x] === c.id) blobs[y * W + x] = 1;
   }
-  // 외벽 중심선 (문 찾기용): 단순화한 윤곽의 각 변을 안쪽으로 외벽 두께의 절반만큼
-  const inside = (x, y) => { x = Math.round(x); y = Math.round(y); return x >= 0 && y >= 0 && x < W && y < H && F2[y * W + x] === 1; };
-  const extSegs = outline.map((a, i) => {
-    const b = outline[(i + 1) % outline.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, nx = -(b[1] - a[1]) / L, ny = (b[0] - a[0]) / L;
-    const sgn = inside((a[0] + b[0]) / 2 + nx * (tExt / 2 + 1), (a[1] + b[1]) / 2 + ny * (tExt / 2 + 1)) ? 1 : -1, o = sgn * tExt / 2;
-    return { seg: [a[0] + nx * o, a[1] + ny * o, b[0] + nx * o, b[1] + ny * o], t: tExt, ext: true };
-  });
-  return { ring, bars, blobs, F2, extSegs };
+  return { ring, bars, blobs, F2 };
 }
 
-// 문 찾기: 벽 중심선 위의 한 점(경첩)에서 반지름 r 인 1/4 원(문 열림 호)이 그려져 있으면 그 자리는 문이다.
-// 벽을 따라 2px 씩 경첩 후보를 옮기며, 반지름(긴 변의 2~8%)·여는 방향·여는 쪽 4가지를 재서
-// ① 호 위의 점이 거의 다 (벽이 아닌) 선 위에 있고 ② 문짝(경첩에서 여는 쪽으로 곧은 선, 벽 위가 아님)이 있고 ③ 문이 지나가는 안쪽이 비어 있으면 문이다.
-// 반환: [{ si: 벽 번호, p: 경첩, u: 문 폭 방향, n: 여는 쪽, r, lo, hi: 벽 위 구간, ext: 외벽인지 }]
-// pxPerM: 1m 가 몇 px 인지 (모르면 0 → 반지름 범위를 이미지 크기로 어림)
-function detectDoors(segs, lines, W, H, pxPerM = 0, K = null) { // K: 벽 마스크 (문짝 자리가 벽이면 문이 아니다)
-  const S = Math.max(W, H), L1 = morph(lines, W, H, 1, false), doors = [];
-  const on = (x, y) => { x = Math.round(x); y = Math.round(y); return x >= 0 && y >= 0 && x < W && y < H && L1[y * W + x] === 1; };
-  const isWall = (x, y) => { if (!K) return false; x = Math.round(x); y = Math.round(y); return x >= 0 && y >= 0 && x < W && y < H && K[y * W + x] === 1; };
-  // 문 폭 0.55~1.25m (의자 등받이 같은 작은 호는 빠진다). 축척을 모르면 이미지 긴 변의 2~8%
-  const rMin = Math.round(pxPerM ? pxPerM * 0.55 : S * 0.02), rMax = Math.round(pxPerM ? pxPerM * 1.25 : S * 0.08);
-  const A = Array.from({ length: 18 }, (_, i) => 0.12 + i * (1.33 / 17));          // 호 위 각도 (7°~83°)
-  const IN = [[0.5, 0.45], [0.5, 0.8], [0.5, 1.15], [0.7, 0.6], [0.7, 1.0], [0.35, 0.8]]; // 문이 지나가는 안쪽 [반지름 비율, 각도]: 비어 있어야 한다
-  segs.forEach((sg, si) => {
-    const [x1, y1, x2, y2] = sg.seg, L = Math.hypot(x2 - x1, y2 - y1);
-    if (L < rMin) return;
-    const ux = (x2 - x1) / L, uy = (y2 - y1) / L, nx = -uy, ny = ux, found = [];
-    for (let s = -rMax; s <= L + rMax; s += 2) { // 벽 끝 바깥 (문 폭만큼)까지: 문 자리가 이미 틈으로 그려져 경첩이 벽 끝이나 맞은편 벽에 있는 경우
-      if (found.some(f => Math.abs(f.s - s) < f.r * 0.8)) continue;
-      const px = x1 + ux * s, py = y1 + uy * s;
-      let best = null;
-      for (let r = rMin; r <= rMax; r += 2) for (const du of [1, -1]) for (const dn of [1, -1]) {
-        const pt = (q, a) => [px + q * (Math.cos(a) * du * ux + Math.sin(a) * dn * nx), py + q * (Math.cos(a) * du * uy + Math.sin(a) * dn * ny)];
-        let hit = 0, arcWall = 0; // 호는 빈 곳에 그린 가는 선: 벽 위를 지나면 벽 모서리를 호로 잘못 본 것
-        for (const a of A) { const [ax, ay] = pt(r, a); if (on(ax, ay)) hit++; if (a > 0.35 && a < 1.22 && isWall(ax, ay)) arcWall++; } // 양 끝은 벽에 붙어 있어도 된다
-        if (hit < A.length - 1 || arcWall > 2) continue;
-        let leaf = 0, onWall = 0; // 문짝: 경첩에서 여는 쪽으로 곧은 선. 그 선이 벽 위라면 문짝이 아니라 벽이다
-        for (let q = 0.3; q <= 0.95; q += 0.05) { const [lx, ly] = pt(r * q, Math.PI / 2); if (on(lx, ly)) leaf++; if (isWall(lx, ly)) onWall++; }
-        if (leaf < 12 || onWall > 6) continue;
-        let busy = 0; // 문이 지나가는 안쪽은 비어 있어야 (책상·의자가 빽빽한 곳 제외)
-        for (const [q, a] of IN) if (on(...pt(r * q, a))) busy++;
-        if (busy > 1) continue;
-        if (!best || hit > best.hit || (hit === best.hit && r > best.r)) best = { hit, r, du, dn };
-      }
-      if (best) found.push({ s, r: best.r, du: best.du, dn: best.dn, px, py });
+// 벽 잇기: ① 같은 줄(가로·세로)의 막대가 gapMax 이하 틈으로 떨어져 있으면 하나로 합친다 (문 자리·끊긴 벽)
+// ② 다른 벽에 닿지 않은 막대 끝은, 그 방향으로 reachMax 안에 벽(다른 막대·외벽 띠)이 있으면 그 벽까지 늘린다
+// 마지막에 joinEnds 로 끝을 만나는 벽의 바깥 면에 맞춘다
+function connectWalls(bars, ring, W, H, gapMax, reachMax) {
+  const axis = b => Math.abs(b.seg[1] - b.seg[3]) < 0.5 ? 'h' : Math.abs(b.seg[0] - b.seg[2]) < 0.5 ? 'v' : '';
+  const line = b => axis(b) === 'h' ? b.seg[1] : b.seg[0], span = b => axis(b) === 'h' ? [Math.min(b.seg[0], b.seg[2]), Math.max(b.seg[0], b.seg[2])] : [Math.min(b.seg[1], b.seg[3]), Math.max(b.seg[1], b.seg[3])];
+  // ① 같은 줄 합치기
+  for (let merged = true; merged;) {
+    merged = false;
+    for (let i = 0; i < bars.length && !merged; i++) for (let j = i + 1; j < bars.length && !merged; j++) {
+      const a = bars[i], b = bars[j], ax = axis(a);
+      if (!ax || ax !== axis(b) || Math.abs(line(a) - line(b)) > Math.max(a.t, b.t)) continue;
+      const [a0, a1] = span(a), [b0, b1] = span(b);
+      if (Math.max(a0, b0) - Math.min(a1, b1) > gapMax) continue;
+      const la = a1 - a0, lb = b1 - b0, ln = (line(a) * la + line(b) * lb) / Math.max(1e-6, la + lb), lo = Math.min(a0, b0), hi = Math.max(a1, b1);
+      bars[i] = { ...a, t: Math.max(a.t, b.t), seg: ax === 'h' ? [lo, ln, hi, ln] : [ln, lo, ln, hi] };
+      bars.splice(j, 1); merged = true;
     }
-    found.forEach(f => doors.some(o => Math.hypot(o.p[0] - f.px, o.p[1] - f.py) < f.r * 0.3) || doors.push( // 이웃 벽에서 이미 찾은 문은 한 번만
-      { si, p: [f.px, f.py], u: [f.du * ux, f.du * uy], n: [f.dn * nx, f.dn * ny], r: f.r, ext: !!sg.ext, t: sg.t,
-      lo: f.du > 0 ? f.s : f.s - f.r, hi: f.du > 0 ? f.s + f.r : f.s })); // lo~hi: 벽 위에서 문이 차지하는 구간
-  });
-  return doors;
+  }
+  // ② 모자란 끝 늘리기
+  const onRing = (x, y) => { x = Math.round(x); y = Math.round(y); return x >= 0 && y >= 0 && x < W && y < H && ring[y * W + x] === 1; };
+  const onBar = (x, y, self) => bars.some(o => {
+    if (o === self) return false;
+    const [x1, y1, x2, y2] = o.seg, dx = x2 - x1, dy = y2 - y1, l = dx * dx + dy * dy, k = l ? Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / l)) : 0;
+    return Math.hypot(x - (x1 + k * dx), y - (y1 + k * dy)) <= o.t / 2 + 1; });
+  const hitWall = (x, y, self) => onRing(x, y) || onBar(x, y, self);
+  for (const b of bars) {
+    const ax = axis(b); if (!ax) continue;
+    for (const end of [0, 1]) {
+      const [x1, y1, x2, y2] = b.seg, ex = end ? x2 : x1, ey = end ? y2 : y1, ox = end ? x1 : x2, oy = end ? y1 : y2;
+      const L = Math.hypot(ex - ox, ey - oy) || 1, ux = (ex - ox) / L, uy = (ey - oy) / L, gap = b.t / 2 + 2;
+      if (hitWall(ex + ux * gap, ey + uy * gap, b)) continue; // 이미 닿아 있다
+      for (let k = gap; k <= reachMax; k += 1) if (hitWall(ex + ux * k, ey + uy * k, b)) {
+        if (end) { b.seg[2] = ex + ux * k; b.seg[3] = ey + uy * k; } else { b.seg[0] = ex + ux * k; b.seg[1] = ey + uy * k; }
+        break;
+      }
+    }
+  }
+  joinEnds(bars);
+  return bars;
 }
 
 // 한 방향(가로 또는 세로)으로만 팽창: vertical=true 면 위아래로 r 만큼
@@ -653,27 +644,12 @@ function traceToPlan(w, P, widthM = 0) {
   let bars = SC.bars.concat(segs);
   if (segs.length) joinEnds(bars);
 
-  // 문: 문 열림 호가 있는 자리는 벽을 끊어 연다 (내부 벽은 막대를 둘로 나누고, 외벽은 띠를 파낸다)
-  // 축척(1m 당 px): 입력한 가로 길이나 AI 가 읽은 치수가 있을 때만
+  // 벽 잇기: 좌석 도면은 문을 그리지 않고 벽이 서로 이어진다 (문 자리·끊긴 틈을 막고, 모자란 벽 끝을 이웃 벽까지)
+  // 잇는 거리: 같은 줄 틈은 문 폭(1.3m)까지, 모자란 끝은 0.4m 까지 (축척 모르면 가로 15m 가정). 끝 늘리기를 길게 하면 책상 칸막이까지 이어져 버린다
   let fx0 = W, fx1 = 0;
   for (let i = 0; i < W * H; i++) if (SC.F2[i]) { const x = i % W; if (x < fx0) fx0 = x; if (x > fx1) fx1 = x; }
-  const knownW = +widthM > 0 ? +widthM : +w.width_mm > 500 ? +w.width_mm / 1000 : 0, pxPerM = knownW && fx1 > fx0 ? (fx1 - fx0 + 1) / knownW : 0;
-  const all = bars.concat(SC.extSegs), doors = detectDoors(all, P.light, W, H, pxPerM, K), cut = [];
-  bars.forEach((b, i) => {
-    const ds = doors.filter(d => d.si === i).sort((p, q) => p.lo - q.lo), [x1, y1, x2, y2] = b.seg, L = Math.hypot(x2 - x1, y2 - y1) || 1;
-    let from = 0;
-    const piece = (s0, s1) => { if (s1 - s0 >= b.t) cut.push({ ...b, seg: [x1 + (x2 - x1) * s0 / L, y1 + (y2 - y1) * s0 / L, x1 + (x2 - x1) * s1 / L, y1 + (y2 - y1) * s1 / L] }); };
-    for (const d of ds) { piece(from, d.lo); from = Math.max(from, d.hi); }
-    piece(from, L);
-  });
-  bars = cut;
-  for (const d of doors) if (all[d.si].ext) { // 외벽 띠 파내기: 문 폭 × (두께 + 여유)
-    const [x1, y1, x2, y2] = all[d.si].seg, L = Math.hypot(x2 - x1, y2 - y1) || 1, ux = (x2 - x1) / L, uy = (y2 - y1) / L, h = d.t / 2 + 3;
-    for (let s = d.lo; s <= d.hi; s += 0.5) for (let o = -h; o <= h; o += 0.5) {
-      const x = Math.round(x1 + ux * s - uy * o), y = Math.round(y1 + uy * s + ux * o);
-      if (x >= 0 && y >= 0 && x < W && y < H) SC.ring[y * W + x] = 0;
-    }
-  }
+  const knownW = +widthM > 0 ? +widthM : +w.width_mm > 500 ? +w.width_mm / 1000 : 15, pxPerM = fx1 > fx0 ? (fx1 - fx0 + 1) / knownW : S / 15;
+  bars = connectWalls(bars, SC.ring, W, H, pxPerM * 1.3, pxPerM * 0.4);
 
   // 4. 범위·축척: 단순화한 건물 발자국 = 건물 외곽
   let x0 = W, y0 = H, x1 = 0, y1 = 0;
@@ -696,9 +672,7 @@ function traceToPlan(w, P, widthM = 0) {
     });
   }
   const walls = bars.map(({ seg, t }) => straighten([cx(seg[0]), cy(seg[1]), cx(seg[2]), cy(seg[3]), Math.max(4, Math.round(t * k))]));
-  // 문 열림 호: 경첩(cm), 문 폭 방향·여는 쪽 단위 벡터, 반지름(cm)
-  const doorOut = doors.map(d => ({ x: cx(d.p[0]), y: cy(d.p[1]), u: d.u, n: d.n, r: Math.round(d.r * k) }));
-  return finalize({ width: Math.round((x1 - x0 + 1) * k), height: Math.round((y1 - y0 + 1) * k), wallThickness: 15, walls, shapes, doors: doorOut,
+  return finalize({ width: Math.round((x1 - x0 + 1) * k), height: Math.round((y1 - y0 + 1) * k), wallThickness: 15, walls, shapes,
     src: { x0, y0, k } }); // src: 원본 이미지 px ↔ cm 변환 (px = cm / k + x0), 채점·겹쳐 보기용
 }
 
@@ -709,7 +683,7 @@ function finalize(p) {
   const walls = p.walls.map(w => [cx(w[0]), cy(w[1]), cx(w[2]), cy(w[3]), ...w.slice(4, 5)])
     .filter(w => w.every(Number.isFinite) && (w[0] !== w[2] || w[1] !== w[3]));
   const shapes = (p.shapes || []).map(sh => sh.map(l => l.map(([x, y]) => [cx(x), cy(y)])));
-  return { width: W, height: H, wallThickness: p.wallThickness, walls, shapes, doors: p.doors || [], ...(p.src ? { src: p.src } : {}) };
+  return { width: W, height: H, wallThickness: p.wallThickness, walls, shapes, ...(p.src ? { src: p.src } : {}) };
 }
 
 // 거의 수평·수직인(4° 이내) 벽 선분을 똑바로 편다

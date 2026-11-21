@@ -81,7 +81,9 @@ def wall_with_openings(x1, y1, x2, y2, t, kind, n_door=1, n_win=0, door_side=1):
             if horiz: g.rectangle([(a0 + s0, y1 - t // 2), (a0 + s1, y1 + t // 2)], fill=0)
             else: g.rectangle([(x1 - t // 2, a0 + s0), (x1 + t // 2, a0 + s1)], fill=0)
         if kind_o == 'door':
-            r = s1 - s0
+            r = s1 - s0                              # 문: 틈+호 (정답에서는 벽: 좌석 도면은 문 자리도 벽으로 잇는다)
+            if horiz: g.rectangle([(a0 + s0, y1 - t // 2), (a0 + s1, y1 + t // 2)], fill=0)
+            else: g.rectangle([(x1 - t // 2, a0 + s0), (x1 + t // 2, a0 + s1)], fill=0)
             if horiz: door_arc(a0 + s0, y1, 1, 0, 0, door_side, r)
             else: door_arc(x1, a0 + s0, 0, 1, door_side, 0, r)
         cur = max(cur, s1)

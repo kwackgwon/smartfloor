@@ -1,8 +1,7 @@
 // 모든 좌표는 cm. 그릴 때만 화면 배율 s 를 곱한다.
-// plan = { v, width, height, wallThickness, walls: [[x1,y1,x2,y2,두께?]], shapes: [[고리...]], doors: [{x,y,u,n,r}] } (trace.js 참고)
+// plan = { v, width, height, wallThickness, walls: [[x1,y1,x2,y2,두께?]], shapes: [[고리...]] } (trace.js 참고)
 // 저장: localStorage 'smartfloor' = plan, 'smartfloor-key' / '-model' = Gemini 설정
-const KEY = 'smartfloor', PLAN_V = 2, WALL = '#D9D9D9', EDGE = '#BDBDBD', GRID = 10;
-let PAD = 30; // 도면 둘레 여백 (cm): 외벽이 잘리지 않게, 바깥으로 여는 문 호까지 들어가게 (show 에서 다시 잰다)
+const KEY = 'smartfloor', PLAN_V = 2, WALL = '#D9D9D9', EDGE = '#BDBDBD', GRID = 10, PAD = 30; // PAD: 외벽이 잘리지 않게 도면 둘레 여백 (cm)
 const $ = id => document.getElementById(id);
 const cvs = $('c'), g = cvs.getContext('2d'), msg = $('msg'), file = $('file'), form = $('form');
 let plan = null, image = null, s = 1, tmp = null;
@@ -53,22 +52,10 @@ function draw(scale = s * (devicePixelRatio || 1), ratio = devicePixelRatio || 1
     paths.forEach(P => { if (fill) g.fill(P, 'evenodd'); else { g.lineWidth = edge * 2; g.stroke(P); } });
   }
 
-  // 문: 경첩에서 문 폭 방향으로 닫힌 자리 → 여는 쪽까지 1/4 원 (흰 바탕, 연한 테두리)
-  g.lineWidth = edge * 1.5; g.strokeStyle = EDGE; g.fillStyle = '#fff';
-  (plan.doors || []).forEach(d => {
-    const a0 = Math.atan2(d.u[1], d.u[0]), a1 = Math.atan2(d.n[1], d.n[0]), ccw = d.u[0] * d.n[1] - d.u[1] * d.n[0] < 0;
-    g.beginPath(); g.moveTo(d.x, d.y); g.lineTo(d.x + d.u[0] * d.r, d.y + d.u[1] * d.r); g.arc(d.x, d.y, d.r, a0, a1, ccw); g.closePath();
-    g.fill(); g.stroke();
-  });
 }
 
 function show(p) {
   plan = p; tmp = null;
-  PAD = 30;
-  for (const d of p.doors || []) for (const [a, b] of [[1, 0], [0, 1], [0.7071, 0.7071]]) {
-    const x = d.x + (d.u[0] * a + d.n[0] * b) * d.r, y = d.y + (d.u[1] * a + d.n[1] * b) * d.r;
-    PAD = Math.max(PAD, -x + 10, x - p.width + 10, -y + 10, y - p.height + 10);
-  }
   $('empty').hidden = $('loading').hidden = true; cvs.hidden = false;
   layout();
 }
