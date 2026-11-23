@@ -103,7 +103,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .primary.big { padding: 12px 14px; font-size: 15px; }
 
 .stage { padding: 14px; min-height: 560px; display: grid; place-items: center; background: repeating-conic-gradient(rgba(148,163,184,.08) 0 25%, transparent 0 50%) 0 0 / 24px 24px; }
-canvas { max-width: 100%; border-radius: 8px; background: #fff; box-shadow: 0 2px 12px rgba(15,23,42,.12); }
+canvas { max-width: 100%; border-radius: 8px; background: repeating-conic-gradient(#e5e7eb 0 25%, #fff 0 50%) 0 0 / 16px 16px; box-shadow: 0 2px 12px rgba(15,23,42,.12); } /* 투명 배경을 체크무늬로 보여 준다 */
 .empty { text-align: center; color: var(--muted); line-height: 1.8; }
 .empty b { color: var(--text); }
 .spin { display: inline-block; width: 18px; height: 18px; margin-right: 10px; vertical-align: -3px; border: 3px solid var(--line); border-top-color: var(--indigo); border-radius: 50%; animation: spin .8s linear infinite; }

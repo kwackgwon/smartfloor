@@ -25,10 +25,10 @@ function layout() { // 화면 폭에 맞춰 캔버스 크기 결정 (고해상�
 
 function draw(scale = s * (devicePixelRatio || 1), ratio = devicePixelRatio || 1) {
   g.setTransform(1, 0, 0, 1, 0, 0);
-  g.fillStyle = '#fff'; g.fillRect(0, 0, cvs.width, cvs.height);
+  g.clearRect(0, 0, cvs.width, cvs.height); // 배경은 투명 (PNG 도 투명 배경)
   g.setTransform(scale, 0, 0, scale, PAD * scale, PAD * scale);
 
-  // 벽: 흰 바탕에 #D9D9D9 한 색으로만 칠한다 (테두리·격자 없음 → 겹치는 벽은 하나로 이어진다)
+  // 벽: 투명 바탕에 #D9D9D9 한 색으로만 칠한다 (테두리·격자 없음 → 겹치는 벽은 하나로 이어진다)
   const lines = [...plan.walls, ...(tmp ? [tmp] : [])];
   g.lineJoin = 'miter'; g.strokeStyle = g.fillStyle = WALL;
   lines.forEach(w => {

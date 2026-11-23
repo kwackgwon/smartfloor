@@ -581,8 +581,8 @@ function schematize(K, F, tExt, W, H) {
   const ts = bars.flatMap(b => Array(Math.max(1, Math.round(Math.hypot(b.seg[2] - b.seg[0], b.seg[3] - b.seg[1]) / 10))).fill(b.t)).sort((a, b) => a - b);
   const tInt = Math.min(tExt, Math.max(3, Math.round(S * 0.004), ts.length ? ts[ts.length >> 1] : tExt * 0.6));
   bars.forEach(b => { b.t = tInt; });
-  // 외벽은 내벽보다 확실히 두껍게 (좌석 도면: 외벽 ≈ 내벽의 1.8배 이상). 얇게 그린 도면이면 안쪽으로 띠를 넓힌다
-  const tE = Math.max(tExt, Math.round(tInt * 1.8));
+  // 외벽 두께는 원래 도면대로 (내벽보다 얇게는 그리지 않는다)
+  const tE = Math.max(tExt, tInt);
   if (tE > tExt) for (let i = 0; i < N; i++) if (F2[i] && D[i] <= tE) ring[i] = 1;
   for (const horiz of [true, false]) {
     const k = horiz ? 1 : 0, grp = bars.filter(b => b.horiz === horiz).sort((a, b) => a.seg[k] - b.seg[k]);
@@ -690,13 +690,16 @@ function connectWalls(bars, ring, W, H, gapMax, reachMax, light = null) {
       }
     }
   }
-  // ③ 떠 있는 막대 지우기: 양 끝 모두 어떤 벽에도 닿지 않으면 좌석 구분선·가구 선이다 (벽은 다른 벽에 이어진다)
+  // ③ 떠 있는 막대 지우기: 양 끝 모두 어떤 벽에도 닿지 않으면 좌석 구분선·가구 선이다 (벽은 다른 벽에 이어진다). 한쪽만 붙은 0.9m 미만 토막(문틀)도 지운다
   for (let i = bars.length - 1; i >= 0; i--) {
     const b = bars[i], L = Math.hypot(b.seg[2] - b.seg[0], b.seg[3] - b.seg[1]);
     // 옆으로 붙은 벽(중간에서 다른 막대가 닿음)도 이어진 것으로 본다
     const mid = [0.25, 0.5, 0.75].some(f => { const x = b.seg[0] + (b.seg[2] - b.seg[0]) * f, y = b.seg[1] + (b.seg[3] - b.seg[1]) * f;
       return bars.some(o => o !== b && Math.min(Math.hypot(o.seg[0] - x, o.seg[1] - y), Math.hypot(o.seg[2] - x, o.seg[3] - y)) <= b.t + o.t); });
-    if (!touchesEnd(b, 0) && !touchesEnd(b, 1) && !mid && L < gapMax * 3) bars.splice(i, 1);
+    const e0 = touchesEnd(b, 0), e1 = touchesEnd(b, 1);
+    if (!e0 && !e1 && !mid && L < gapMax * 3) bars.splice(i, 1);
+    // 한쪽만 붙은 0.9m 미만 토막은 문틀·벽 끝 장식 (좌석 도면에는 그리지 않는다)
+    else if (e0 !== e1 && !mid && L < gapMax / 1.3 * 0.9) bars.splice(i, 1);
   }
   // ④ 좌석 칸막이 지우기: 한쪽 끝만 벽에 붙은 1.5m 미만의 짧은 막대가 같은 방향·비슷한 길이로 3개 이상
   //    일정한 간격(0.5~2.5m, 좌석 폭)으로 늘어서 있으면 좌석 사이 칸막이다 (좌석 도면에는 방을 나누는 벽만 남긴다)
