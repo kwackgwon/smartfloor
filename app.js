@@ -333,9 +333,9 @@ cvs.onpointerdown = e => {
     // 터치: 미리보기(빨간 표시)가 없으니 첫 탭은 고르기만, 같은 벽을 한 번 더 누르면 지운다
     if (e.pointerType !== 'mouse' && !sameHit(h, hover)) { hover = h; draw(); say('한 번 더 누르면 빨간 벽을 지웁니다'); return; }
     remember();
-    const LIST = { wall: 'walls', shape: 'shapes', seat: 'seats', table: 'tables', door: 'doors' }, NAME = { wall: '벽', shape: '벽 모양', seat: '좌석', table: '탁자', door: '문' };
+    const LIST = { wall: 'walls', shape: 'shapes', seat: 'seats', table: 'tables', door: 'doors' }, NAME = { wall: '벽을', shape: '벽 모양을', seat: '좌석을', table: '탁자를', door: '문을' };
     plan[LIST[h.kind]].splice(h.i, 1);
-    hover = null; save(); draw(); say(`${NAME[h.kind]}을(를) 지웠습니다 (되돌리기로 복구)`);
+    hover = null; save(); draw(); say(`${NAME[h.kind]} 지웠습니다 (되돌리기로 복구)`);
     return;
   }
   if (!drawing) return;
