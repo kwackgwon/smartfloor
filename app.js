@@ -1,7 +1,8 @@
 // 모든 좌표는 cm. 그릴 때만 화면 배율 s 를 곱한다.
 // plan = { v, width, height, wallThickness, walls: [[x1,y1,x2,y2,두께?]], shapes: [[고리...]] } (trace.js 참고)
 // 저장: localStorage 'smartfloor' = plan, 'smartfloor-key' / '-model' = Gemini 설정
-const KEY = 'smartfloor', PLAN_V = 2, WALL = '#D9D9D9', GRID = 10, PAD = 30; // PAD: 외벽이 잘리지 않게 도면 둘레 여백 (cm)
+const KEY = 'smartfloor', PLAN_V = 2, WALL = '#D9D9D9', SEAT = '#AEAEAE', DOOR = '#FFFFFF', GRID = 10;
+let PAD = 30; // 도면 둘레 여백 (cm): 외벽이 잘리지 않게, 바깥으로 여는 문 호까지 들어가게 (show 에서 다시 잰다)
 const $ = id => document.getElementById(id);
 const cvs = $('c'), g = cvs.getContext('2d'), msg = $('msg'), file = $('file'), form = $('form');
 let plan = null, image = null, s = 1, tmp = null;
@@ -42,9 +43,31 @@ function draw(scale = s * (devicePixelRatio || 1), ratio = devicePixelRatio || 1
     sh.forEach(l => { l.forEach(([x, y], i) => i ? P.lineTo(x, y) : P.moveTo(x, y)); P.closePath(); });
     g.fill(P, 'evenodd');
   });
+  // 문: 문 폭만큼 벽을 비우고(투명) 흰 1/4 원 (경첩 → 닫힌 자리 → 여는 쪽)
+  for (const d of plan.doors || []) {
+    const [ux, uy] = d.u, [nx, ny] = d.n, h = (d.t || plan.wallThickness) / 2 + 2;
+    g.save(); g.globalCompositeOperation = 'destination-out'; g.beginPath();
+    g.moveTo(d.x - nx * h, d.y - ny * h); g.lineTo(d.x + ux * d.r - nx * h, d.y + uy * d.r - ny * h);
+    g.lineTo(d.x + ux * d.r + nx * h, d.y + uy * d.r + ny * h); g.lineTo(d.x + nx * h, d.y + ny * h); g.closePath(); g.fill(); g.restore();
+    const a0 = Math.atan2(uy, ux), a1 = Math.atan2(ny, nx), ccw = ((a1 - a0 + 3 * Math.PI) % (2 * Math.PI)) - Math.PI < 0;
+    g.fillStyle = DOOR; g.beginPath(); g.moveTo(d.x, d.y); g.arc(d.x, d.y, d.r, a0, a1, ccw); g.closePath(); g.fill();
+  }
+  // 탁자(연한 회색)·좌석(회색 네모 + 흰 번호)
+  g.fillStyle = WALL; for (const t of plan.tables || []) g.fillRect(t.x, t.y, t.w, t.h);
+  for (const st of plan.seats || []) {
+    g.fillStyle = SEAT; g.fillRect(st.x, st.y, st.w, st.h);
+    if (st.label) {
+      g.fillStyle = '#fff'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.font = `500 ${Math.min(st.w / (st.label.length * 0.62), st.h * 0.45)}px system-ui, -apple-system, 'Segoe UI', sans-serif`;
+      g.fillText(st.label, st.x + st.w / 2, st.y + st.h / 2 + 0.5);
+    }
+  }
   if (hover) { // 지우기 모드: 지울 벽을 빨갛게
     g.globalAlpha = 0.55; g.strokeStyle = g.fillStyle = '#ef4444';
     if (hover.kind === 'wall' && plan.walls[hover.i]) { const w = plan.walls[hover.i]; g.lineCap = w[4] ? 'butt' : 'square'; g.lineWidth = w[4] || plan.wallThickness; g.beginPath(); g.moveTo(w[0], w[1]); g.lineTo(w[2], w[3]); g.stroke(); }
+    const it = hover.kind === 'seat' ? plan.seats[hover.i] : hover.kind === 'table' ? plan.tables[hover.i] : null;
+    if (it) g.fillRect(it.x, it.y, it.w, it.h);
+    if (hover.kind === 'door' && plan.doors[hover.i]) { const d = plan.doors[hover.i]; g.beginPath(); g.arc(d.x, d.y, d.r, 0, Math.PI * 2); g.fill(); }
     if (hover.kind === 'shape' && plan.shapes[hover.i]) { const P = new Path2D(); plan.shapes[hover.i].forEach(l => { l.forEach(([x, y], i) => i ? P.lineTo(x, y) : P.moveTo(x, y)); P.closePath(); }); g.fill(P, 'evenodd'); }
     g.globalAlpha = 1;
   }
@@ -52,6 +75,11 @@ function draw(scale = s * (devicePixelRatio || 1), ratio = devicePixelRatio || 1
 
 function show(p) {
   plan = p; tmp = null; hover = null;
+  PAD = 30;
+  for (const d of p.doors || []) for (const [a, b] of [[1, 0], [0, 1], [0.7071, 0.7071]]) {
+    const x = d.x + (d.u[0] * a + d.n[0] * b) * d.r, y = d.y + (d.u[1] * a + d.n[1] * b) * d.r;
+    PAD = Math.max(PAD, -x + 10, x - p.width + 10, -y + 10, y - p.height + 10);
+  }
   $('empty').hidden = $('loading').hidden = true; cvs.hidden = false;
   layout();
 }
@@ -272,6 +300,13 @@ setMode('view'); $('undo').disabled = !undoStack.length;
 // 누른 자리의 벽 찾기: 선 벽(두께 + 손가락 여유) → 칠한 벽 모양(외벽 띠·기둥, 짝홀 규칙으로 안쪽인지)
 function hitTest(p) {
   const tol = Math.min(10 / s, 30); // 화면 10px 여유, 최대 30cm (가까운 다른 벽이 잡히지 않게)
+  const inBox = r => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+  for (let i = (plan.seats || []).length - 1; i >= 0; i--) if (inBox(plan.seats[i])) return { kind: 'seat', i };
+  for (let i = (plan.doors || []).length - 1; i >= 0; i--) { // 문: 1/4 원 안
+    const d = plan.doors[i], vx = p.x - d.x, vy = p.y - d.y;
+    if (Math.hypot(vx, vy) <= d.r && vx * d.u[0] + vy * d.u[1] >= -tol && vx * d.n[0] + vy * d.n[1] >= -tol) return { kind: 'door', i };
+  }
+  for (let i = (plan.tables || []).length - 1; i >= 0; i--) if (inBox(plan.tables[i])) return { kind: 'table', i };
   for (let i = plan.walls.length - 1; i >= 0; i--) {
     const [x1, y1, x2, y2, t] = plan.walls[i], dx = x2 - x1, dy = y2 - y1, l = dx * dx + dy * dy;
     const k = l ? Math.max(0, Math.min(1, ((p.x - x1) * dx + (p.y - y1) * dy) / l)) : 0;
@@ -298,8 +333,9 @@ cvs.onpointerdown = e => {
     // 터치: 미리보기(빨간 표시)가 없으니 첫 탭은 고르기만, 같은 벽을 한 번 더 누르면 지운다
     if (e.pointerType !== 'mouse' && !sameHit(h, hover)) { hover = h; draw(); say('한 번 더 누르면 빨간 벽을 지웁니다'); return; }
     remember();
-    if (h.kind === 'wall') plan.walls.splice(h.i, 1); else plan.shapes.splice(h.i, 1);
-    hover = null; save(); draw(); say(h.kind === 'wall' ? '벽을 지웠습니다 (되돌리기로 복구)' : '벽 모양을 지웠습니다 (되돌리기로 복구)');
+    const LIST = { wall: 'walls', shape: 'shapes', seat: 'seats', table: 'tables', door: 'doors' }, NAME = { wall: '벽', shape: '벽 모양', seat: '좌석', table: '탁자', door: '문' };
+    plan[LIST[h.kind]].splice(h.i, 1);
+    hover = null; save(); draw(); say(`${NAME[h.kind]}을(를) 지웠습니다 (되돌리기로 복구)`);
     return;
   }
   if (!drawing) return;
