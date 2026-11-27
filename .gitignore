@@ -1,5 +1,2 @@
 .env
-node_modules/
-figma-plugin/code.js
-
 *.png
