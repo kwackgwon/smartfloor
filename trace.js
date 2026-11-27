@@ -1,11 +1,13 @@
-// SmartFloor 이미지 분석: 도면 이미지의 픽셀만으로 벽 도면을 만든다 (AI 없이 동작, 무료·한도 없음)
+// SmartFloor 이미지 분석: 도면 이미지의 픽셀만으로 좌석 도면(벽·문·좌석)을 만든다 (무료·한도 없음)
 // 결과 plan (단위 cm): { width, height, wallThickness,
 //   walls: [[x1,y1,x2,y2,두께?]]          선으로 된 벽 (두께가 없으면 wallThickness)
-//   shapes: [[고리, 고리, ...]] }           칠해진 벽 모양. 고리 = [[x,y],...], 구멍 포함 evenodd 로 채운다
+//   shapes: [[고리, 고리, ...]]             칠해진 벽 모양. 고리 = [[x,y],...], 구멍 포함 evenodd 로 채운다
+//   doors: [{ x, y, u, n, r, t }]           문: 경첩, 문 폭 방향·여는 쪽 단위 벡터, 반지름, 벽 두께
+//   seats: [{ x, y, w, h, label, zone }]    좌석: 왼쪽 위, 크기, 번호, 구역(방) 번호
+//   tables: [{ x, y, w, h }] }              탁자
 //
 // 벽 모양은 업로드한 도면 이미지의 벽 픽셀을 그대로 다각형으로 옮긴다 (벽 색은 도면에서 자동으로 고른다).
-// AI(Gemini·OpenRouter)를 쓰면 건물 영역·벽 위치(0~1000 정규화 좌표)·치수를 받아 글자·표제란을 더 잘 걸러 내고
-// 얇은 칸막이를 메운다 (traceToPlan 의 w). AI 없이는 autoExtent 가 건물 영역을 추정한다.
+// 건물 영역은 autoExtent 가 가장 큰 벽 덩어리에서 추정한다.
 // ── 이미지 픽셀 분석 ──
 // 읽으면서 고르게 맞춘다: ① 긴 변이 1600px 보다 작으면 키운다 (벽이 몇 px 밖에 안 되면 얇은 선 지우기에 벽까지 지워진다)
 // ② 배경(가장 흔한 밝기)이 어두우면 반전, ③ 배경이 회색·잡음이 있거나 대비가 낮으면 배경 → 흰색, 가장 진한 선 → 검정으로 늘린다
@@ -337,53 +339,7 @@ function orthogonalize(pts) {
   });
 }
 
-// Gemini 가 준 벽 선분을 마스크의 실제 벽 중심선에 맞춘다 (평행 이동 + 기울기 보정), 끝점은 벽이 끝나는 곳까지.
-// 반환 { seg, t: 두께(px), cov: 선분 중 벽 픽셀 위에 있는 비율 }
-function snapWall([x1, y1, x2, y2], mask, W, H) {
-  const L = Math.hypot(x2 - x1, y2 - y1), none = { seg: [x1, y1, x2, y2], t: 0, cov: 0 };
-  if (L < 4) return none;
-  const ux = (x2 - x1) / L, uy = (y2 - y1) / L, nx = -uy, ny = ux;
-  const R = Math.max(6, Math.round(Math.max(W, H) * 0.015)), N = Math.max(10, Math.round(L / 4));
-  const on = (x, y) => { x = Math.round(x); y = Math.round(y); return x >= 0 && y >= 0 && x < W && y < H && mask[y * W + x] === 1; };
-
-  // 1. 선분을 따라 N 곳에서, 법선 방향 ±R 안의 벽 픽셀 구간 중 선에 가장 가까운 구간의 중심을 찾는다
-  const samples = [];
-  for (let i = 0; i <= N; i++) {
-    const s = 0.05 + 0.9 * i / N, px = x1 + (x2 - x1) * s, py = y1 + (y2 - y1) * s;
-    let best = null;
-    for (let d = -R; d <= R; d++) {
-      if (!on(px + nx * d, py + ny * d) || (d > -R && on(px + nx * (d - 1), py + ny * (d - 1)))) continue; // 구간 시작점만
-      let e = d; while (e < R && on(px + nx * (e + 1), py + ny * (e + 1))) e++;
-      const c = (d + e) / 2;
-      if (!best || Math.abs(c) < Math.abs(best.c)) best = { c, len: e - d + 1 };
-      d = e;
-    }
-    if (best) samples.push({ s, ...best });
-  }
-  if (samples.length < 3) return none;
-
-  // 2. 가로지르는 다른 벽(구간이 유난히 긴 곳)과 튀는 값을 빼고, 오프셋 = a + b·s 로 직선 맞춤 (최소제곱)
-  const med = a => { const b = [...a].sort((p, q) => p - q); return b[b.length >> 1]; };
-  const tLen = med(samples.map(x => x.len)), cMed = med(samples.map(x => x.c));
-  const ok = samples.filter(x => x.len <= tLen * 1.8 + 2 && Math.abs(x.c - cMed) <= Math.max(4, tLen * 1.5));
-  if (ok.length < 3) return none;
-  const ms = ok.reduce((a, x) => a + x.s, 0) / ok.length, mc = ok.reduce((a, x) => a + x.c, 0) / ok.length;
-  const vs = ok.reduce((a, x) => a + (x.s - ms) ** 2, 0), b = vs > 1e-6 ? ok.reduce((a, x) => a + (x.s - ms) * (x.c - mc), 0) / vs : 0, a = mc - b * ms;
-  let ax = x1 + nx * a, ay = y1 + ny * a, bx = x2 + nx * (a + b), by = y2 + ny * (a + b);
-
-  // 3. 끝점: 벽 위면 벽이 끝날 때까지 늘리고, 벽 밖이면 벽이 시작할 때까지 줄인다
-  const L2 = Math.hypot(bx - ax, by - ay), vx = (bx - ax) / L2, vy = (by - ay) / L2, E = R * 2;
-  const fit = (px, py, dx, dy) => {
-    if (on(px, py)) { let k = 0; while (k < E && on(px + dx * (k + 1), py + dy * (k + 1))) k++; return [px + dx * k, py + dy * k]; }
-    let k = 0; while (k < E && !on(px - dx * k, py - dy * k)) k++;
-    return k < E ? [px - dx * k, py - dy * k] : [px, py];
-  };
-  [ax, ay] = fit(ax, ay, -vx, -vy);
-  [bx, by] = fit(bx, by, vx, vy);
-  return { seg: [ax, ay, bx, by], t: tLen, cov: ok.length / (N + 1) };
-}
-
-// 창문 메우기 (Gemini 없이): 외벽의 창문 구간은 칠해진 벽 사이가 얇은 선 두 줄로 그려져 비어 보인다.
+// 창문 메우기: 외벽의 창문 구간은 칠해진 벽 사이가 얇은 선 두 줄로 그려져 비어 보인다.
 // 같은 줄에 있는 칠해진 벽 사이 틈(긴 변의 10% 이하)을, 그 틈을 따라 얇은 선이 거의(80%) 이어져 있으면 후보로 메우고,
 // 그중 ① 건물 바깥과 맞닿고 ② 긴 변이 벽에 붙어 있지 않은 것(= 벽 옆을 두껍게 만드는 가짜가 아닌 것)만 받아들인다
 function bridgeWindows(K, light, W, H) {
@@ -481,7 +437,7 @@ function closeExterior(K, W, H) {
   return out;
 }
 
-// 얇은 벽 찾기 (AI 없이): 칠해진 벽 마스크는 5px 보다 얇은 것을 지우므로, 얇은 선으로 그린 칸막이가 빠진다. 그중 벽인 것만 되살린다
+// 얇은 벽 찾기: 칠해진 벽 마스크는 5px 보다 얇은 것을 지우므로, 얇은 선으로 그린 칸막이가 빠진다. 그중 벽인 것만 되살린다
 // ① 칠해진 벽을 뺀 벽 색 선 중 곧은 가로·세로 선 (이미지 긴 변의 4% 이상) ② 건물 안 ③ 한쪽 끝이 벽(또는 이미 찾은 얇은 벽)에 닿음
 // ④ 짧은 선이 촘촘히 반복되는 무리(계단 디딤판 등)는 뺀다 ⑤ 두 줄로 그린 벽은 사이를 메워 한 벽으로 만들고, 잘 보이게 조금 두껍게 한다
 function thinWalls(K, raw, F, W, H) {
@@ -762,7 +718,9 @@ function detectDoors(segs, lines, W, H, pxPerM = 0, K = null) { // K: 벽 마스
       let best = null, px = 0, py = 0;
       for (const off of [0, (sg.t || 0) / 2, -(sg.t || 0) / 2]) { // 경첩: 벽 중심선 또는 양쪽 면 (유리벽처럼 두 줄로 그린 벽은 면에 경첩이 있다)
       const qx = x1 + ux * s + nx * off, qy = y1 + uy * s + ny * off;
-      for (let r = rMin; r <= rMax; r += 2) for (const du of [1, -1]) for (const dn of [1, -1]) {
+      // 빠른 거르기: 문짝(경첩에서 여는 쪽으로 곧은 선)이 가장 작은 문 폭 안에서라도 보이는 여는 쪽만 자세히 본다
+      const sides = [1, -1].filter(dn => [0.4, 0.6, 0.85].every(q => on(qx + dn * nx * rMin * q, qy + dn * ny * rMin * q)));
+      if (sides.length) for (let r = rMin; r <= rMax; r += 2) for (const du of [1, -1]) for (const dn of sides) {
         const pt = (q, a) => [qx + q * (Math.cos(a) * du * ux + Math.sin(a) * dn * nx), qy + q * (Math.cos(a) * du * uy + Math.sin(a) * dn * ny)];
         let hit = 0, arcWall = 0; // 호는 빈 곳에 그린 가는 선: 벽 위를 지나면 벽 모서리를 호로 잘못 본 것
         for (const a of A) { const [ax, ay] = pt(r, a); if (on(ax, ay)) hit++; if (a > 0.35 && a < 1.22 && isWall(ax, ay)) arcWall++; } // 양 끝은 벽에 붙어 있어도 된다
@@ -786,6 +744,27 @@ function detectDoors(segs, lines, W, H, pxPerM = 0, K = null) { // K: 벽 마스
   return doors;
 }
 
+// 방 안 좌석 번호 순서: 좌석이 옆으로 붙어 늘어선 방향을 '줄'로 보고(가로로 붙은 쌍이 많으면 가로줄, 세로면 세로줄),
+// 오른쪽 위에서 시작해 지그재그로 센다. 가로줄: 맨 윗줄 오른쪽→왼쪽, 다음 줄 왼쪽→오른쪽 …
+// 세로줄: 맨 오른쪽 줄 위→아래, 다음 줄 아래→위 … (좌석 도면에서 흔한 번호 매김)
+function snakeOrder(g, m) {
+  const c = s => [(s.x0 + s.x1) / 2, (s.y0 + s.y1) / 2], size = s => Math.max(s.x1 - s.x0, s.y1 - s.y0);
+  let hPairs = 0, vPairs = 0;
+  for (const a of g) for (const b of g) {
+    if (a === b) continue;
+    const [ax, ay] = c(a), [bx, by] = c(b), d = (size(a) + size(b)) / 2 * 1.15;
+    if (Math.abs(ay - by) < d * 0.3 && Math.abs(ax - bx) < d) hPairs++;
+    if (Math.abs(ax - bx) < d * 0.3 && Math.abs(ay - by) < d) vPairs++;
+  }
+  const rows = hPairs >= vPairs, key = s => rows ? c(s)[1] : -c(s)[0], along = s => rows ? -c(s)[0] : c(s)[1];
+  const tol = m * 0.4, lines = [];
+  for (const s of [...g].sort((a, b) => key(a) - key(b))) {
+    const L = lines.find(l => Math.abs(key(l[0]) - key(s)) <= tol);
+    if (L) L.push(s); else lines.push([s]);
+  }
+  return lines.flatMap((l, i) => l.sort((a, b) => (along(a) - along(b)) * (i % 2 ? -1 : 1)));
+}
+
 // 최종 벽(외벽 띠 + 막대)을 원본 px 마스크로
 function wallRaster(ring, bars, W, H) {
   const WM = ring.slice();
@@ -802,7 +781,7 @@ function wallRaster(ring, bars, W, H) {
 // 좌석 찾기 (원본 px): 선으로 둘러싸인 빈 칸 중
 //  ① 책상 칸: 짧은 변 0.45m 이상·긴 변 1.7m 이하의 꽉 찬 네모이고, 한 변 바깥(0.6m 안)에 의자(선 잉크)가 있으면 좌석 하나
 //  ② 탁자: 긴 변 1.7~5m·짧은 변 0.5~1.6m 의 네모. 의자가 있는 긴 변을 따라 0.8m 마다 좌석을 둔다 (탁자는 연한 회색으로 그린다)
-// 좌석 번호: 벽으로 나뉜 방마다 A, B, C… (위→아래, 왼쪽→오른쪽 순서), 방 안에서는 줄마다 왼쪽부터 01, 02…
+// 좌석 번호: 벽으로 나뉜 방마다 A, B, C… (위→아래, 왼쪽→오른쪽 순서), 방 안에서는 snakeOrder 순서로 01, 02…
 function detectSeats(P, SC, bars, doors, pxPerM) {
   const { W, H } = P, light = P.fine || P.light, N = W * H, m = pxPerM || Math.max(W, H) / 15, F = SC.F2, WM = wallRaster(SC.ring, bars, W, H);
   // 글자·숫자·점 같은 작은 잉크 조각(0.2m 미만)은 칸의 경계가 아니다 (책상 안에 쓴 치수 글자 때문에 칸이 쪼개지지 않게)
@@ -837,12 +816,22 @@ function detectSeats(P, SC, bars, doors, pxPerM) {
       if (!withChairs.length) continue;
       tables.push({ x0: c.x0, y0: c.y0, x1: c.x1 + 1, y1: c.y1 + 1 });
       // 좌석은 탁자 긴 변 위에 걸쳐 (가운데가 탁자 테두리)
-      const n = Math.max(1, Math.round(hi / (m * 0.8))), sz = Math.min(m * 0.9, hi / n * 0.92);
+      const n = Math.max(1, Math.round(hi / (m * 0.8))), sz = Math.min(m * 0.95, hi / n * 0.97);
       for (const k of withChairs) for (let i = 0; i < n; i++) {
         const mid = (horiz ? c.x0 : c.y0) + hi * (i + 0.5) / n, a0 = mid - sz / 2, a1 = mid + sz / 2;
         const edge = k === 0 ? c.y0 : k === 1 ? c.y1 + 1 : k === 2 ? c.x0 : c.x1 + 1, b0 = edge - sz / 2;
-        seats.push(horiz ? { x0: a0, y0: b0, x1: a1, y1: b0 + sz } : { x0: b0, y0: a0, x1: b0 + sz, y1: a1 });
+        seats.push(horiz ? { x0: a0, y0: b0, x1: a1, y1: b0 + sz, tbl: { c, k, i, horiz } } : { x0: b0, y0: a0, x1: b0 + sz, y1: a1, tbl: { c, k, i, horiz } });
       }
+    }
+  }
+  // 탁자 둘레 좌석은 다른 좌석과 같은 크기로, 탁자 한쪽 끝부터 맞닿게 놓는다 (가운데가 탁자 테두리)
+  const deskSz = seats.filter(a => a.desk).map(a => Math.max(a.x1 - a.x0, a.y1 - a.y0)).sort((a, b) => a - b);
+  if (deskSz.length >= 3) {
+    const sz = deskSz[deskSz.length >> 1];
+    for (const a of seats) if (a.tbl) {
+      const { c, k, i, horiz } = a.tbl, start = (horiz ? c.x0 : c.y0) + i * sz;
+      const edge = k === 0 ? c.y0 : k === 1 ? c.y1 + 1 : k === 2 ? c.x0 : c.x1 + 1, b0 = edge - sz / 2;
+      Object.assign(a, horiz ? { x0: start, y0: b0, x1: start + sz, y1: b0 + sz } : { x0: b0, y0: start, x1: b0 + sz, y1: start + sz });
     }
   }
   // 칠한 좌석 상자 (디자인 도면): 벽 색이 아닌 중간 회색으로 꽉 칠한 0.45~1.2m 네모
@@ -888,9 +877,8 @@ function detectSeats(P, SC, bars, doors, pxPerM) {
     .sort((a, b) => Math.abs(a.y - b.y) > m * 0.5 ? a.y - b.y : a.x - b.x);
   const out = [];
   ordered.forEach(({ g }, gi) => {
-    const letter = String.fromCharCode(65 + (gi % 26)), row = m * 0.4;
-    g.sort((a, b) => Math.abs(a.y0 - b.y0) > row ? a.y0 - b.y0 : a.x0 - b.x0)
-      .forEach((s, i) => out.push({ x0: s.x0, y0: s.y0, x1: s.x1, y1: s.y1, label: letter + String(i + 1).padStart(2, '0') }));
+    const letter = String.fromCharCode(65 + (gi % 26));
+    snakeOrder(g, m).forEach((s, i) => out.push({ x0: s.x0, y0: s.y0, x1: s.x1, y1: s.y1, zone: gi + 1, label: letter + String(i + 1).padStart(2, '0') }));
   });
   return { seats: out, tables };
 }
@@ -940,7 +928,7 @@ function joinEnds(segs) {
   segs.forEach((r, i) => { r.seg = fixed[i]; });
 }
 
-// Gemini 없이 건물 영역 추정 (미리보기용): 가장 큰 벽 덩어리에서 시작해, 가까이(긴 변의 5% 이내) 있는 덩어리를 차례로 붙인다
+// 건물 영역 추정: 가장 큰 벽 덩어리에서 시작해, 가까이(긴 변의 5% 이내) 있는 덩어리를 차례로 붙인다
 function autoExtent(P) {
   const { W, H } = P, S = Math.max(W, H), minArea = (S * 0.007) ** 2, gap = S * 0.05;
   P.comp = P.comp || components(P.wall, W, H);
@@ -958,19 +946,14 @@ function autoExtent(P) {
       used.add(c); box = [Math.min(box[0], c.x0), Math.min(box[1], c.y0), Math.max(box[2], c.x1), Math.max(box[3], c.y1)]; grew = true;
     }
   }
-  return { extent: [box[1] / H * 1000, box[0] / W * 1000, box[3] / H * 1000, box[2] / W * 1000], walls: [], width_mm: 0 };
+  return { extent: [box[1] / H * 1000, box[0] / W * 1000, box[3] / H * 1000, box[2] / W * 1000] }; // [ymin, xmin, ymax, xmax] 0~1000
 }
 
-// Gemini 결과 + 픽셀 → cm 도면
-// w: AI 결과 또는 autoExtent 결과, P: wallMasks 결과, widthM: 사용자가 입력한 건물 가로 길이(m, 없으면 0)
+// 픽셀 → cm 도면
+// w: autoExtent 결과 (건물 영역), P: wallMasks 결과, widthM: 사용자가 입력한 건물 가로 길이(m, 없으면 0)
 function traceToPlan(w, P, widthM = 0) {
-  const { W, H, raw, wall } = P, S = Math.max(W, H);
-  const ok4 = a => Array.isArray(a) && a.length === 4 && a.every(Number.isFinite);
-  const lines = (w.walls || []).filter(ok4).map(([y1, x1, y2, x2]) => [x1 / 1000 * W, y1 / 1000 * H, x2 / 1000 * W, y2 / 1000 * H]);
-  // 건물 영역: Gemini 가 준 extent (없으면 벽 선분 범위), 3% 여유
-  let ex = ok4(w.extent) ? [w.extent[1] / 1000 * W, w.extent[0] / 1000 * H, w.extent[3] / 1000 * W, w.extent[2] / 1000 * H] : null;
-  if (!ex && lines.length) ex = [Math.min(...lines.flatMap(l => [l[0], l[2]])), Math.min(...lines.flatMap(l => [l[1], l[3]])), Math.max(...lines.flatMap(l => [l[0], l[2]])), Math.max(...lines.flatMap(l => [l[1], l[3]]))];
-  if (!ex) throw Object.assign(new Error('도면에서 건물을 찾지 못했습니다. 다시 시도하거나 더 선명한 도면을 올려 주세요'), { busy: true });
+  const { W, H, wall } = P, S = Math.max(W, H);
+  const ex = [w.extent[1] / 1000 * W, w.extent[0] / 1000 * H, w.extent[3] / 1000 * W, w.extent[2] / 1000 * H]; // 건물 영역, 3% 여유
   const pad = S * 0.03, inEx = (x, y) => x >= ex[0] - pad && x <= ex[2] + pad && y >= ex[1] - pad && y <= ex[3] + pad;
 
   // 1. 칠해진 벽 덩어리 중 건물 영역 안에 있고 충분히 큰 것만 남긴다 (글자·기호 조각 제거)
@@ -981,30 +964,20 @@ function traceToPlan(w, P, widthM = 0) {
   const K0 = new Uint8Array(W * H);
   for (let i = 0; i < W * H; i++) if (lab[i] && keepId[lab[i]]) K0[i] = 1;
   const KE = closeExterior(bridgeWindows(K0, P.light, W, H), W, H); // 외벽 창문 구간 메우기 → 외벽 전부 닫기
-  // 얇은 칸막이 벽 더하기 (AI 없이): 벽을 연한 색으로 칠한 디자인 도면에서만.
+  // 얇은 칸막이 벽 더하기: 벽을 연한 색으로 칠한 디자인 도면에서만.
   // 진한 벽의 CAD 도면은 벽을 칠하거나 빗금으로 그리고(hatchWalls), 얇은 한 줄 선은 대부분 가구라서 쓰지 않는다
   const K = P.tone && !P.tone.dark ? thinWalls(KE, P.raw, KE.F, W, H) : KE;
 
   // 2. 좌석 도면처럼 단순화: 외벽 띠 + 같은 두께의 내부 벽 막대 + 기둥
-  const SC = schematize(K, KE.F, KE.t, W, H), tInt = SC.bars.length ? SC.bars[0].t : Math.max(3, Math.round(KE.t * 0.6));
+  const SC = schematize(K, KE.F, KE.t, W, H);
 
-  // 3. AI 벽 선분: 실제 벽 픽셀에 맞추고, 이미 있는 벽이 덮고 있으면 버린다. 남은 것(빠진 칸막이)만 같은 두께 막대로 더한다
-  const segs = [];
-  for (const l of lines) {
-    if (!inEx((l[0] + l[2]) / 2, (l[1] + l[3]) / 2)) continue;
-    let r = snapWall(l, K, W, H);
-    if (r.cov >= 0.85) continue;
-    if (r.cov < 0.35) { r = snapWall(l, raw, W, H); if (r.cov < 0.5) continue; }
-    segs.push({ seg: r.seg, t: tInt });
-  }
-  let bars = SC.bars.concat(segs);
-  if (segs.length) joinEnds(bars);
+  let bars = SC.bars;
 
   // 벽 잇기: 좌석 도면은 문을 그리지 않고 벽이 서로 이어진다 (문 자리·끊긴 틈을 막고, 모자란 벽 끝을 이웃 벽까지)
   // 잇는 거리: 같은 줄 틈은 문 폭(1.3m)까지, 모자란 끝은 0.4m 까지 (축척 모르면 가로 15m 가정). 끝 늘리기를 길게 하면 책상 칸막이까지 이어져 버린다
   let fx0 = W, fx1 = 0;
   for (let i = 0; i < W * H; i++) if (SC.F2[i]) { const x = i % W; if (x < fx0) fx0 = x; if (x > fx1) fx1 = x; }
-  const knownW = +widthM > 0 ? +widthM : +w.width_mm > 500 ? +w.width_mm / 1000 : 15, pxPerM = fx1 > fx0 ? (fx1 - fx0 + 1) / knownW : S / 15;
+  const knownW = +widthM > 0 ? +widthM : 15, pxPerM = fx1 > fx0 ? (fx1 - fx0 + 1) / knownW : S / 15;
   bars = connectWalls(bars, SC.ring, W, H, pxPerM * 1.3, pxPerM * 0.4, P.light);
 
   // 문: 문 열림 호가 그려진 자리 (벽 데이터는 이어진 채로 두고, 그릴 때 문 폭만큼 벽을 비우고 1/4 원을 그린다)
@@ -1017,8 +990,8 @@ function traceToPlan(w, P, widthM = 0) {
   let x0 = W, y0 = H, x1 = 0, y1 = 0;
   for (let i = 0; i < W * H; i++) if (SC.F2[i]) { const x = i % W, y = (i - x) / W; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
   if (x1 <= x0 || y1 <= y0) throw Object.assign(new Error('도면에서 벽을 찾지 못했습니다. 다시 시도하거나 더 선명한 도면을 올려 주세요'), { busy: true });
-  // 축척: 입력한 가로 길이(m) > AI 가 읽은 도면 치수(mm) > 가로 15m 가정
-  const realW = +widthM > 0 ? +widthM * 100 : +w.width_mm > 500 ? +w.width_mm / 10 : 1500, k = realW / (x1 - x0 + 1);
+  // 축척: 입력한 가로 길이(m), 없으면 가로 15m 가정
+  const realW = +widthM > 0 ? +widthM * 100 : 1500, k = realW / (x1 - x0 + 1);
   const cx = v => Math.round((v - x0) * k * 10) / 10, cy = v => Math.round((v - y0) * k * 10) / 10;
 
   // 5. 외벽 띠·기둥·사선 벽 → 다각형 (구멍 포함), 내부 벽 막대 → 선 벽
@@ -1037,12 +1010,12 @@ function traceToPlan(w, P, widthM = 0) {
   // 문: 경첩(cm), 문 폭 방향·여는 쪽 단위 벡터, 반지름(cm), 벽 두께(cm) / 좌석·탁자: 왼쪽 위(cm)·크기(cm)·번호
   const doorOut = doors.map(d => ({ x: cx(d.p[0]), y: cy(d.p[1]), u: d.u, n: d.n, r: Math.round(d.r * k), t: Math.round(d.t * k) }));
   const rect = r => ({ x: cx(r.x0), y: cy(r.y0), w: Math.round((r.x1 - r.x0) * k), h: Math.round((r.y1 - r.y0) * k) });
-  const seats = seatInfo.seats.map(r => ({ ...rect(r), label: r.label })), tables = seatInfo.tables.map(rect);
+  const seats = seatInfo.seats.map(r => ({ ...rect(r), label: r.label, zone: r.zone })), tables = seatInfo.tables.map(rect); // zone: 구역(방) 번호
   return finalize({ width: Math.round((x1 - x0 + 1) * k), height: Math.round((y1 - y0 + 1) * k), wallThickness: 15, walls, shapes,
     doors: doorOut, seats, tables, src: { x0, y0, k } }); // src: 원본 이미지 px ↔ cm 변환 (px = cm / k + x0), 채점·겹쳐 보기용
 }
 
-// 형식·범위 정리 (Gemini 응답을 그대로 믿지 않는다)
+// 형식·범위 정리
 function finalize(p) {
   const W = Math.min(10000, Math.max(200, p.width || 1000)), H = Math.min(10000, Math.max(200, p.height || 1000));
   const cx = v => Math.min(W, Math.max(0, v)), cy = v => Math.min(H, Math.max(0, v));

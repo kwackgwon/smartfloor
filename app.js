@@ -1,6 +1,6 @@
 // 모든 좌표는 cm. 그릴 때만 화면 배율 s 를 곱한다.
-// plan = { v, width, height, wallThickness, walls: [[x1,y1,x2,y2,두께?]], shapes: [[고리...]] } (trace.js 참고)
-// 저장: localStorage 'smartfloor' = plan, 'smartfloor-key' / '-model' = Gemini 설정
+// plan = { v, width, height, wallThickness, walls, shapes, doors, seats, tables } (trace.js 참고)
+// 저장: localStorage 'smartfloor' = plan, 'smartfloor-undo' = 다시 생성 직전 도면
 const KEY = 'smartfloor', PLAN_V = 2, WALL = '#D9D9D9', SEAT = '#AEAEAE', DOOR = '#FFFFFF', GRID = 10;
 let PAD = 30; // 도면 둘레 여백 (cm): 외벽이 잘리지 않게, 바깥으로 여는 문 호까지 들어가게 (show 에서 다시 잰다)
 const $ = id => document.getElementById(id);
@@ -66,7 +66,10 @@ function draw(scale = s * (devicePixelRatio || 1), ratio = devicePixelRatio || 1
     g.globalAlpha = 0.55; g.strokeStyle = g.fillStyle = '#ef4444';
     if (hover.kind === 'wall' && plan.walls[hover.i]) { const w = plan.walls[hover.i]; g.lineCap = w[4] ? 'butt' : 'square'; g.lineWidth = w[4] || plan.wallThickness; g.beginPath(); g.moveTo(w[0], w[1]); g.lineTo(w[2], w[3]); g.stroke(); }
     const it = hover.kind === 'seat' ? plan.seats[hover.i] : hover.kind === 'table' ? plan.tables[hover.i] : null;
-    if (it) g.fillRect(it.x, it.y, it.w, it.h);
+    if (it && mode === 'zone') { // 구역 이름: 같은 구역 좌석 전체를 파랗게
+      g.fillStyle = '#3b82f6';
+      for (const st of plan.seats) if (sameZone(st, it)) g.fillRect(st.x, st.y, st.w, st.h);
+    } else if (it) g.fillRect(it.x, it.y, it.w, it.h);
     if (hover.kind === 'door' && plan.doors[hover.i]) { const d = plan.doors[hover.i]; g.beginPath(); g.arc(d.x, d.y, d.r, 0, Math.PI * 2); g.fill(); }
     if (hover.kind === 'shape' && plan.shapes[hover.i]) { const P = new Path2D(); plan.shapes[hover.i].forEach(l => { l.forEach(([x, y], i) => i ? P.lineTo(x, y) : P.moveTo(x, y)); P.closePath(); }); g.fill(P, 'evenodd'); }
     g.globalAlpha = 1;
@@ -90,39 +93,7 @@ function save() {
   catch (e) { say('저장 실패 (브라우저 저장소를 사용할 수 없음)', 'chip err'); }
 }
 
-// ── 오류 안내 (AI 사용량 폭주·한도 초과·시간 초과) ─────────
-let noticeTimer;
-const LINK = {
-  Gemini: '<a href="https://aistudio.google.com" target="_blank" rel="noopener">Google AI Studio</a>',
-  OpenRouter: '<a href="https://openrouter.ai/settings/credits" target="_blank" rel="noopener">OpenRouter</a>'
-};
-function showNotice(err, who) {
-  const N = {
-    busy: [`${who} 서버가 붐벼요`, `내 키나 설정 문제가 아니라 ${who} 쪽이 잠시 바쁜 거예요. 조금 뒤 다시 시도하면 대부분 풀려요. 계속되면 ⚙ AI 설정에서 다른 모델을 골라 보세요.`, 60],
-    quota: err.daily
-      ? ['오늘 쓸 수 있는 AI 사용량을 다 썼어요', `${who} 키의 하루 무료 한도를 넘었어요. 한도가 풀린 뒤 다시 쓰거나 다른 모델을 고르세요. 자주 쓴다면 ${LINK[who]}에서 결제를 연결하면 한도가 크게 늘어요.`, 0]
-      : ['AI 사용 한도를 넘었어요', `짧은 시간에 요청이 많았어요. 잠시 기다리면 풀려요. 자주 막힌다면 ${LINK[who]}에서 남은 사용량을 확인하세요.`, 60],
-    timeout: [`${who} 응답이 너무 오래 걸렸어요`, '도면이 복잡하거나 AI 쪽이 바쁠 때 생겨요. 잠시 뒤 다시 시도해 보세요.', 30]
-  }[err.kind];
-  if (!N) return;
-  const [title, body, def] = N;
-  const tip = who === 'Gemini' && !$('or-key').value.trim() ? '<br>⚙ AI 설정에 OpenRouter 무료 키를 넣어 두면 Gemini 가 막힐 때 자동으로 넘어가요.' : '';
-  $('notice-title').textContent = title;
-  $('notice-body').innerHTML = body + tip + (plan ? '<br>지금 보이는 도면(AI 없이 만든 것)은 그대로 쓸 수 있어요.' : '');
-  let left = err.retryAfter || def;
-  clearInterval(noticeTimer);
-  const tickWait = () => {
-    const t = left >= 3600 ? `${Math.floor(left / 3600)}시간 ${Math.floor(left % 3600 / 60)}분` : left >= 60 ? `${Math.floor(left / 60)}분 ${left % 60}초` : `${left}초`;
-    $('notice-wait').textContent = err.daily && !err.retryAfter ? '' : left > 0 ? `약 ${t} 뒤 다시 시도하는 걸 권해요` : '지금 다시 시도할 수 있어요';
-    if (left-- <= 0) clearInterval(noticeTimer);
-  };
-  tickWait(); noticeTimer = setInterval(tickWait, 1000);
-  $('notice').hidden = false; $('ai').open = true;
-}
-const hideNotice = () => { clearInterval(noticeTimer); $('notice').hidden = true; };
-$('retry').onclick = () => refine();
-
-const working = on => { $('gen').disabled = $('refine').disabled = on; };
+const working = on => { $('gen').disabled = on; };
 const widthM = () => +new FormData(form).get('widthM') || 0;
 let pxCache = null; // 같은 이미지면 픽셀 분석을 다시 하지 않는다
 async function pixels() {
@@ -130,11 +101,11 @@ async function pixels() {
   return pxCache.px;
 }
 
-// ── 도면 생성: AI 없이 이미지만 분석 (무료, 한도 없음) ─────
+// ── 도면 생성: 이미지만 분석 (무료, 한도 없음) ─────
 form.onsubmit = e => { e.preventDefault(); generate(); };
 async function generate() {
   if (!image) { say('도면 이미지를 먼저 올려 주세요', 'chip err'); return; }
-  working(true); hideNotice();
+  working(true);
   $('empty').hidden = true; cvs.hidden = true; $('loading').hidden = false; $('loading-text').textContent = '도면 분석 중…';
   say('도면 분석 중…', 'chip');
   await new Promise(r => setTimeout(r, 30)); // 로딩 표시가 먼저 그려지게
@@ -150,87 +121,6 @@ async function generate() {
     if (plan) cvs.hidden = false; else $('empty').hidden = false;
     say(/^도면이 아닌/.test(err.message) ? err.message : '도면에서 벽을 찾지 못했습니다. 벽이 또렷한 도면 이미지인지 확인해 주세요', 'chip err');
   } finally { working(false); }
-}
-
-// ── AI로 다듬기: Gemini 먼저, 막히면 OpenRouter 무료 모델 ────
-$('refine').onclick = () => refine();
-async function refine() {
-  const f = Object.fromEntries(new FormData(form)), gKey = $('key').value.trim(), orKey = $('or-key').value.trim();
-  if (!image) { say('도면 이미지를 먼저 올려 주세요', 'chip err'); return; }
-  if (!gKey && !orKey) { say('⚙ AI 설정에 Gemini 또는 OpenRouter(무료) 키를 넣어 주세요', 'chip err'); $('settings').open = true; return; }
-  working(true); hideNotice();
-  const t0 = Date.now();
-  let who = gKey ? 'Gemini' : 'OpenRouter', stage = '도면 분석 중', pre = '';
-  const status = () => say(`AI(${who}) ${pre}${stage}… ${Math.round((Date.now() - t0) / 1000)}초`, 'chip');
-  const onProgress = e => { stage = e.phase === 'draw' ? `벽 찾는 중 (${e.count}개)` : '도면 분석 중'; status(); };
-  const tick = setInterval(status, 1000); status();
-  try {
-    const px = await pixels();
-    if (!plan) show(traceToPlan(autoExtent(px), px, widthM())); // AI 를 기다리는 동안 AI 없이 만든 도면을 먼저 보여 준다
-    let w, last;
-    if (gKey) {
-      try { w = await viaGemini(f, gKey, onProgress, (p, st) => { pre = p; stage = st; status(); }); }
-      catch (err) { last = err; if (!orKey) throw err; }
-    }
-    if (!w && orKey) {
-      who = 'OpenRouter'; pre = gKey ? 'Gemini 대신 ' : ''; stage = '도면 분석 중'; status();
-      w = await viaOpenRouter(f, orKey, onProgress, (p, st) => { pre = p; stage = st; status(); });
-    }
-    if (!w) throw last;
-    const p = traceToPlan(w, px, widthM()); remember(); show(p); save();
-    say(`AI로 다듬기 완료 · ${who} · ${Math.round((Date.now() - t0) / 1000)}초`);
-  } catch (err) {
-    say(`AI로 다듬지 못했어요 (${err.message})`, 'chip err');
-    showNotice(err, who);
-  } finally { clearInterval(tick); working(false); }
-}
-
-// Gemini 재시도 규칙 (최대 3번):
-//  · 시간 초과 → 같은 모델, 생각 수준 low 로 (빠르게) · 빠르게 해도 시간 초과면 멈춤
-//  · 사용량 폭주 등 일시 오류 → 잠시 기다렸다 다른 flash 모델로 (한도 초과면 같은 모델은 다시 하지 않음)
-//  · 단종 모델 → Google 이 안내한 모델로
-async function viaGemini(f, key, onProgress, onRetry) {
-  const model = $('model').value.trim() || DEFAULT_MODEL;
-  const other = [...$('models').options].map(o => o.value).find(n => n !== model && n.endsWith('-flash'));
-  let cur = { model, level: 'high' }, last;
-  for (let i = 0; i < 3; i++) {
-    try {
-      const w = await askGemini(f, image, key, cur.model, cur.level, onProgress);
-      if (cur.model !== model) { $('model').value = cur.model; saveSettings(); }
-      return w;
-    } catch (err) {
-      last = err;
-      if (!err.busy && !err.suggest) throw err;
-      if (i === 2 || (err.timeout && cur.level === 'low')) break;
-      if (err.kind === 'quota' && (!other || cur.model === other)) break;
-      const next = err.suggest ? { model: err.suggest, level: cur.level }
-        : err.timeout ? { model: cur.model, level: 'low' }
-        : { model: other && cur.model !== other ? other : cur.model, level: cur.level };
-      onRetry(`${next.model !== cur.model ? next.model + ' 로 ' : ''}${next.level !== cur.level ? '빠르게 ' : ''}재시도 ${i + 2}/3 · `, '대기 중');
-      if (!err.suggest && !err.timeout) await new Promise(r => setTimeout(r, 3000 * (i + 1)));
-      cur = next;
-    }
-  }
-  throw last;
-}
-
-// OpenRouter: 고른 모델, 없으면 무료 비전 모델을 앞에서부터 최대 3개 시도 (하루 한도면 바로 멈춤)
-async function viaOpenRouter(f, key, onProgress, onRetry) {
-  const chosen = $('or-model').value.trim();
-  let list = [];
-  try { list = await orFreeVisionModels(); } catch (e) { if (!chosen) throw e; }
-  const models = chosen ? [list.find(m => m.id === chosen) || { id: chosen }] : list.slice(0, 3);
-  if (!models.length) throw new Error('지금 쓸 수 있는 OpenRouter 무료 비전 모델이 없습니다');
-  let last;
-  for (let i = 0; i < models.length; i++) {
-    try { return await askOpenRouter(f, image, key, models[i], onProgress); }
-    catch (err) {
-      last = err;
-      if (!err.busy || err.daily || i === models.length - 1) break;
-      onRetry(`${models[i + 1].id} 로 재시도 ${i + 2}/${models.length} · `, '도면 분석 중');
-    }
-  }
-  throw last;
 }
 
 // ── 참고 도면 이미지 ─────────────────────────────────────
@@ -282,14 +172,15 @@ function undo() {
 let mode = 'view', hover = null; // hover: 지우기 모드에서 가리킨 벽 { kind: 'wall'|'shape', i }
 function setMode(m) {
   mode = m; drawing = m === 'draw'; hover = null; tmp = null;
-  for (const [id, on] of [['draw', m === 'draw'], ['erase', m === 'erase']]) { $(id).setAttribute('aria-pressed', on); $(id).classList.toggle('on', on); }
+  for (const [id, on] of [['draw', m === 'draw'], ['erase', m === 'erase'], ['zone', m === 'zone']]) { $(id).setAttribute('aria-pressed', on); $(id).classList.toggle('on', on); }
   cvs.style.touchAction = m === 'view' ? 'pan-x pan-y' : 'none';
-  cvs.style.cursor = m === 'draw' ? 'crosshair' : m === 'erase' ? 'pointer' : 'default';
+  cvs.style.cursor = m === 'draw' ? 'crosshair' : m === 'erase' || m === 'zone' ? 'pointer' : 'default';
   if (plan) draw();
 }
 const setDrawing = on => setMode(on ? 'draw' : 'view');
 $('draw').onclick = () => setMode(mode === 'draw' ? 'view' : 'draw');
 $('erase').onclick = () => setMode(mode === 'erase' ? 'view' : 'erase');
+$('zone').onclick = () => setMode(mode === 'zone' ? 'view' : 'zone');
 $('undo').onclick = undo;
 addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); undo(); }
@@ -323,10 +214,23 @@ function hitTest(p) {
   }
   return null;
 }
+// 같은 구역: 구역(방) 번호가 있으면 그것으로, 없으면(직접 만든 좌석 등) 번호 앞 글자로
+const sameZone = (a, b) => a.zone != null && b.zone != null ? a.zone === b.zone : (a.label || '').replace(/\d+$/, '') === (b.label || '').replace(/\d+$/, '');
 const sameHit = (a, b) => (!a && !b) || (a && b && a.kind === b.kind && a.i === b.i);
 
 cvs.onpointerdown = e => {
   if (!plan) return;
+  if (mode === 'zone') { // 구역 이름: 누른 좌석과 같은 글자로 시작하는 좌석 번호의 글자를 한꺼번에 바꾼다 (A01 → H01)
+    const h = hitTest(pos(e));
+    if (!h || h.kind !== 'seat') { say('좌석을 눌러 주세요', 'chip err'); return; }
+    const seat = plan.seats[h.i], cur = (seat.label || '').replace(/\d+$/, ''), name = (prompt('이 구역 좌석 번호 앞에 붙일 글자 (예: H)', cur) || '').trim();
+    if (!name || name === cur) return;
+    remember();
+    let n = 0;
+    for (const st of plan.seats) if (sameZone(st, seat)) { st.label = name + (st.label || '').replace(/^\D*/, ''); n++; }
+    save(); draw(); say(`${cur} 구역 ${n}석 → ${name}`);
+    return;
+  }
   if (mode === 'erase') {
     const h = hitTest(pos(e));
     if (!h) { hover = null; draw(); return; }
@@ -345,7 +249,7 @@ cvs.onpointerdown = e => {
 };
 cvs.onpointermove = e => {
   if (!plan) return;
-  if (mode === 'erase') { const h = e.pointerType === 'mouse' ? hitTest(pos(e)) : null; if (!sameHit(h, hover)) { hover = h; draw(); } return; }
+  if (mode === 'erase' || mode === 'zone') { let h = e.pointerType === 'mouse' ? hitTest(pos(e)) : null; if (mode === 'zone' && h && h.kind !== 'seat') h = null; if (!sameHit(h, hover)) { hover = h; draw(); } return; }
   if (!tmp) return;
   const p = pos(e);
   if (e.shiftKey) { tmp[2] = snap(p.x); tmp[3] = snap(p.y); } // 수평/수직으로 정렬 (Shift 를 누르면 사선)
@@ -377,36 +281,6 @@ $('png').onclick = () => { // 최대 2px/cm (긴 변 4000px 이하) 해상도로
 };
 
 let rz; addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(layout, 100); });
-
-// AI 키·모델은 이 브라우저에만 저장 (각 AI 호출에만 쓰고 다른 곳으로 보내지 않는다)
-const SETTINGS = { key: '-key', model: '-model', 'or-key': '-or-key', 'or-model': '-or-model' };
-try { for (const [id, k] of Object.entries(SETTINGS)) $(id).value = localStorage.getItem(KEY + k) || $(id).value; } catch (e) { /* 저장소 사용 불가 */ }
-const keyState = () => {
-  const on = [$('key').value.trim() && 'Gemini', $('or-key').value.trim() && 'OpenRouter'].filter(Boolean);
-  $('key-state').textContent = on.length ? on.join(' · ') + ' 키' : '키 없음'; $('key-state').className = on.length ? 'state ok' : 'state';
-};
-keyState();
-function saveSettings() {
-  try { for (const [id, k] of Object.entries(SETTINGS)) localStorage.setItem(KEY + k, $(id).value.trim()); } catch (e) { /* 저장소 사용 불가 */ }
-}
-async function refreshModels() { // Gemini: 키로 쓸 수 있는 모델 목록을 받아 자동 완성에 채운다
-  const key = $('key').value.trim();
-  if (!key) return;
-  try {
-    const names = await listModels(key);
-    $('models').innerHTML = names.map(n => `<option value="${n}">`).join('');
-    const best = names.find(n => n.endsWith('-flash')) || names[0];
-    const cur = $('model').value.trim(); // 목록에 없거나 최신보다 구버전이면 최신 flash 로 교체
-    if (best && (!names.includes(cur) || ver(cur) < ver(best))) { $('model').value = best; saveSettings(); }
-  } catch (e) { /* 키 오류 등은 다듬을 때 안내 */ }
-}
-async function refreshOrModels() { // OpenRouter: 무료 비전 모델 목록 (키 없이 조회)
-  try { $('or-models').innerHTML = (await orFreeVisionModels()).map(m => `<option value="${m.id}">`).join(''); } catch (e) { /* 목록 없이도 자동 선택 */ }
-}
-$('model').onchange = $('or-model').onchange = saveSettings;
-$('key').onchange = () => { saveSettings(); keyState(); refreshModels(); };
-$('or-key').onchange = () => { saveSettings(); keyState(); };
-refreshModels(); refreshOrModels();
 
 try { // 새로고침 시 저장된 도면 복원 (예전 형식 저장본은 버린다)
   const d = JSON.parse(localStorage.getItem(KEY));
