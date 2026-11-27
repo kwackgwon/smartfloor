@@ -51,8 +51,6 @@
 | `trace.js` | 이미지 분석 (벽 색·벽 픽셀·창문 메우기·외벽 닫기·얇은 벽·좌석 도면식 단순화·벽 잇기·문·좌석·번호) |
 | `app.js` | 화면 동작, 생성, 그리기(벽·문·탁자·좌석), 벽 그리기·지우기·구역 이름·되돌리기, 저장, PNG/JSON 내보내기 |
 | `figma-plugin/` | JSON → Frame(투명) + 벽 모양·선 Vector(#D9D9D9) + 문(흰 1/4 원)·탁자·좌석(#AEAEAE, 흰 번호) |
-| `tools/real-run.js` | 개발용: 사이트를 브라우저에서 그대로 돌려 결과 화면·plan.json 을 저장 |
-| `tools/bench/` | 개발용 연습·채점: `gen.py` 가 정답 벽 마스크(문 자리도 벽)가 있는 연습 도면을 4가지 스타일로 만들고, `score.js` 가 벽 정확도·찾음을 잰다. `target.py` 는 사용자가 준 목표 그림(벽 #D9D9D9)과 결과를 겹쳐 점수를 낸다 |
 
 Figma: `cd figma-plugin && npm i && npm run build` → Figma 데스크톱 *Plugins › Development › Import plugin from manifest* → 플러그인 창에 `smartfloor.json` 내용 붙여넣기 (Node 필요)
 

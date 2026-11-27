@@ -1,11 +1,10 @@
-// 웹에서 내보낸 smartfloor.json -> Frame 1개 (투명 배경) + 벽(#D9D9D9) 모양·선 Vector + 탁자·좌석(번호)·문
 figma.showUI(__html__, { width: 360, height: 320 });
 
 type Plan = {
   width: number; height: number; wallThickness: number;
-  walls: number[][]; // [x1, y1, x2, y2, 두께?]
-  shapes?: number[][][][]; // [모양][고리][점][x, y]
-  doors?: { x: number; y: number; u: number[]; n: number[]; r: number; t?: number }[]; // 경첩, 문 폭 방향, 여는 쪽, 반지름, 벽 두께
+  walls: number[][];
+  shapes?: number[][][][];
+  doors?: { x: number; y: number; u: number[]; n: number[]; r: number; t?: number }[];
   seats?: { x: number; y: number; w: number; h: number; label?: string }[];
   tables?: { x: number; y: number; w: number; h: number }[];
 };
@@ -19,10 +18,9 @@ figma.ui.onmessage = async (d: Plan) => {
   const frame = figma.createFrame();
   frame.name = 'SmartFloor';
   frame.resize(d.width, d.height);
-  frame.fills = []; // 투명 배경
-  frame.clipsContent = false; // 바깥으로 여는 문 호가 잘리지 않게
+  frame.fills = [];
+  frame.clipsContent = false;
 
-  // 칠해진 벽 모양 (구멍 포함) -> Vector 1개, evenodd 로 채움
   const shapes = d.shapes || [];
   if (shapes.length) {
     const data = shapes.flat().map(l => 'M ' + l.map(([x, y]) => `${x} ${y}`).join(' L ') + ' Z').join(' ');
