@@ -5,7 +5,7 @@ type Plan = {
   width: number; height: number; wallThickness: number;
   walls: number[][]; // [x1, y1, x2, y2, 두께?]
   shapes?: number[][][][]; // [모양][고리][점][x, y]
-  doors?: { x: number; y: number; u: number[]; n: number[]; r: number }[]; // 경첩, 문 폭 방향, 여는 쪽, 반지름
+  doors?: { x: number; y: number; u: number[]; n: number[]; r: number; t?: number }[]; // 경첩, 문 폭 방향, 여는 쪽, 반지름, 벽 두께
   seats?: { x: number; y: number; w: number; h: number; label?: string }[];
   tables?: { x: number; y: number; w: number; h: number }[];
 };
@@ -56,10 +56,11 @@ figma.ui.onmessage = async (d: Plan) => {
     const [ux, uy] = dr.u, [nx, ny] = dr.n, a = [dr.x + ux * dr.r, dr.y + uy * dr.r], b = [dr.x + nx * dr.r, dr.y + ny * dr.r];
     const sweep = ux * ny - uy * nx > 0 ? 1 : 0, v = figma.createVector();
     v.name = 'Door';
-    v.vectorPaths = [{ windingRule: 'NONZERO', data: `M ${dr.x} ${dr.y} L ${a[0]} ${a[1]} A ${dr.r} ${dr.r} 0 0 ${sweep} ${b[0]} ${b[1]} Z` }];
+    const h = (dr.t || d.wallThickness || 15) / 2, back = [dr.x - nx * h, dr.y - ny * h], backA = [a[0] - nx * h, a[1] - ny * h]; // 경첩 뒤쪽 벽 반 두께도 문으로
+    v.vectorPaths = [{ windingRule: 'NONZERO', data: `M ${back[0]} ${back[1]} L ${backA[0]} ${backA[1]} L ${a[0]} ${a[1]} A ${dr.r} ${dr.r} 0 0 ${sweep} ${b[0]} ${b[1]} L ${dr.x} ${dr.y} Z` }];
     v.fills = [{ type: 'SOLID', color: WHITE }]; v.strokes = [];
     frame.appendChild(v);
-    v.x = Math.min(dr.x, a[0], b[0]); v.y = Math.min(dr.y, a[1], b[1]);
+    v.x = Math.min(dr.x, a[0], b[0], back[0], backA[0]); v.y = Math.min(dr.y, a[1], b[1], back[1], backA[1]);
   }
   // 탁자(연한 회색)·좌석(회색 네모 + 흰 번호)
   for (const t of d.tables || []) {

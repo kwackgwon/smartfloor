@@ -51,6 +51,9 @@ function draw(scale = s * (devicePixelRatio || 1), ratio = devicePixelRatio || 1
     g.lineTo(d.x + ux * d.r + nx * h, d.y + uy * d.r + ny * h); g.lineTo(d.x + nx * h, d.y + ny * h); g.closePath(); g.fill(); g.restore();
     const a0 = Math.atan2(uy, ux), a1 = Math.atan2(ny, nx), ccw = ((a1 - a0 + 3 * Math.PI) % (2 * Math.PI)) - Math.PI < 0;
     g.fillStyle = DOOR; g.beginPath(); g.moveTo(d.x, d.y); g.arc(d.x, d.y, d.r, a0, a1, ccw); g.closePath(); g.fill();
+    const b = (d.t || plan.wallThickness) / 2; // 경첩 뒤쪽 벽 반 두께도 흰색으로 (문이 벽 두께 전체를 채우게)
+    g.beginPath(); g.moveTo(d.x - nx * b, d.y - ny * b); g.lineTo(d.x + ux * d.r - nx * b, d.y + uy * d.r - ny * b);
+    g.lineTo(d.x + ux * d.r, d.y + uy * d.r); g.lineTo(d.x, d.y); g.closePath(); g.fill();
   }
   // 탁자(연한 회색)·좌석(회색 네모 + 흰 번호)
   g.fillStyle = WALL; for (const t of plan.tables || []) g.fillRect(t.x, t.y, t.w, t.h);
@@ -114,7 +117,8 @@ async function generate() {
     const px = await pixels();
     const p = traceToPlan(autoExtent(px), px, widthM());
     remember(); show(p); save(); // 이전 도면·편집은 되돌리기로 되살릴 수 있다
-    say(`도면 생성 완료 · ${((Date.now() - t0) / 1000).toFixed(1)}초${widthM() ? '' : ' · 가로 길이를 넣으면 실제 크기가 정확해져요'}`);
+    const scale = p.scaleFrom === 'doors' ? ' · 크기는 문 폭으로 추정했어요 (가로 길이를 넣으면 정확해져요)' : p.scaleFrom === 'guess' ? ' · 가로 길이를 넣으면 실제 크기가 정확해져요' : '';
+    say(`도면 생성 완료 · ${((Date.now() - t0) / 1000).toFixed(1)}초${scale}${p.seats.length ? ' · 좌석 글자는 🔤 구역 이름으로 바꿔요' : ''}`);
     if (innerWidth < 800) cvs.scrollIntoView({ behavior: 'smooth', block: 'start' }); // 휴대폰: 결과로 이동
   } catch (err) {
     $('loading').hidden = true;
@@ -195,7 +199,7 @@ function hitTest(p) {
   for (let i = (plan.seats || []).length - 1; i >= 0; i--) if (inBox(plan.seats[i])) return { kind: 'seat', i };
   for (let i = (plan.doors || []).length - 1; i >= 0; i--) { // 문: 1/4 원 안
     const d = plan.doors[i], vx = p.x - d.x, vy = p.y - d.y;
-    if (Math.hypot(vx, vy) <= d.r && vx * d.u[0] + vy * d.u[1] >= -tol && vx * d.n[0] + vy * d.n[1] >= -tol) return { kind: 'door', i };
+    if (Math.hypot(vx, vy) <= d.r && vx * d.u[0] + vy * d.u[1] >= -tol && vx * d.n[0] + vy * d.n[1] >= -tol - (d.t || plan.wallThickness) / 2) return { kind: 'door', i };
   }
   for (let i = (plan.tables || []).length - 1; i >= 0; i--) if (inBox(plan.tables[i])) return { kind: 'table', i };
   for (let i = plan.walls.length - 1; i >= 0; i--) {
@@ -223,7 +227,7 @@ cvs.onpointerdown = e => {
   if (mode === 'zone') { // 구역 이름: 누른 좌석과 같은 글자로 시작하는 좌석 번호의 글자를 한꺼번에 바꾼다 (A01 → H01)
     const h = hitTest(pos(e));
     if (!h || h.kind !== 'seat') { say('좌석을 눌러 주세요', 'chip err'); return; }
-    const seat = plan.seats[h.i], cur = (seat.label || '').replace(/\d+$/, ''), name = (prompt('이 구역 좌석 번호 앞에 붙일 글자 (예: H)', cur) || '').trim();
+    const seat = plan.seats[h.i], cur = (seat.label || '').replace(/\d+$/, ''), name = (prompt('이 구역 좌석 번호 앞에 붙일 글자 (예: H)', cur) || '').trim().toUpperCase();
     if (!name || name === cur) return;
     remember();
     let n = 0;

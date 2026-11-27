@@ -576,10 +576,10 @@ function schematize(K, F, tExt, W, H) {
       const bw = c.x1 - c.x0 + 1, bh = c.y1 - c.y0 + 1, sub = new Uint8Array(bw * bh);
       for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) if (R.lab[y * W + x] === c.id) sub[(y - c.y0) * bw + x - c.x0] = 1;
       const Dd = distOut(sub, bw, bh); let mx = 0; for (let i = 0; i < bw * bh; i++) if (Dd[i] > mx) mx = Dd[i];
-      big = mx <= Math.max(tExt, tInt * 1.5) / 2 + 2 && c.area < bw * bh * 0.5; // 사선 벽은 바운딩 박스의 절반도 안 채운다
+      big = mx <= Math.max(tExt, tInt * 1.5) / 2 + 2 && c.area < bw * bh * 0.5 && Math.max(bw, bh) >= tInt * 8; // 사선 벽: 가늘고 길며 바운딩 박스의 절반도 안 채운다 (화분 같은 작은 덩어리 제외)
     }
     // 꽉 찬 덩어리도 기둥만 한 크기까지 (외벽 두께의 6배 넘게 긴 것은 벽에 붙은 탁자·카운터)
-    const pillar = solid && Math.max(c.x1 - c.x0, c.y1 - c.y0) + 1 <= Math.max(tExt, tInt * 2) * 6 && c.area >= (tInt * 2) ** 2; // 내벽 두께 2배 네모보다 작은 건 조각
+    const pillar = c.area >= (c.x1 - c.x0 + 1) * (c.y1 - c.y0 + 1) * 0.9 && Math.max(c.x1 - c.x0, c.y1 - c.y0) + 1 <= Math.max(tExt, tInt * 2) * 6 && c.area >= (tInt * 2) ** 2; // 기둥: 네모로 꽉 찬 것 (화분처럼 들쭉날쭉한 덩어리 제외) // 내벽 두께 2배 네모보다 작은 건 조각
     if (!attached || !(pillar || big)) continue;
     for (let y = c.y0; y <= c.y1; y++) for (let x = c.x0; x <= c.x1; x++) if (R.lab[y * W + x] === c.id) blobs[y * W + x] = 1;
   }
@@ -814,24 +814,43 @@ function detectSeats(P, SC, bars, doors, pxPerM) {
     } else if (hi >= m * 1.7 && hi <= m * 5 && lo >= m * 0.5 && lo <= m * 1.6 && fill >= 0.55) {
       const horiz = w >= h, sides = horiz ? [0, 1] : [2, 3], withChairs = sides.filter(k => side(c, k, m * 0.6) >= 0.06);
       if (!withChairs.length) continue;
-      tables.push({ x0: c.x0, y0: c.y0, x1: c.x1 + 1, y1: c.y1 + 1 });
+      const bd = 3; // 빈 칸은 테두리 선(과 번짐) 안쪽이라, 탁자는 테두리 선까지 넓힌다
+      const tb = { x0: c.x0 - bd, y0: c.y0 - bd, x1: c.x1 + 1 + bd, y1: c.y1 + 1 + bd }; tables.push(tb);
       // 좌석은 탁자 긴 변 위에 걸쳐 (가운데가 탁자 테두리)
       const n = Math.max(1, Math.round(hi / (m * 0.8))), sz = Math.min(m * 0.95, hi / n * 0.97);
       for (const k of withChairs) for (let i = 0; i < n; i++) {
         const mid = (horiz ? c.x0 : c.y0) + hi * (i + 0.5) / n, a0 = mid - sz / 2, a1 = mid + sz / 2;
         const edge = k === 0 ? c.y0 : k === 1 ? c.y1 + 1 : k === 2 ? c.x0 : c.x1 + 1, b0 = edge - sz / 2;
-        seats.push(horiz ? { x0: a0, y0: b0, x1: a1, y1: b0 + sz, tbl: { c, k, i, horiz } } : { x0: b0, y0: a0, x1: b0 + sz, y1: a1, tbl: { c, k, i, horiz } });
+        seats.push(horiz ? { x0: a0, y0: b0, x1: a1, y1: b0 + sz, tbl: { tb, k, i, n, horiz } } : { x0: b0, y0: a0, x1: b0 + sz, y1: a1, tbl: { tb, k, i, n, horiz } });
       }
     }
   }
-  // 탁자 둘레 좌석은 다른 좌석과 같은 크기로, 탁자 한쪽 끝부터 맞닿게 놓는다 (가운데가 탁자 테두리)
-  const deskSz = seats.filter(a => a.desk).map(a => Math.max(a.x1 - a.x0, a.y1 - a.y0)).sort((a, b) => a - b);
+  // 탁자 둘레 좌석: 다른 좌석과 같은 크기·같은 간격으로, 탁자의 벽 쪽 끝부터 늘어놓는다 (벽에 안 붙은 탁자는 가운데 맞춤).
+  // 좌석은 탁자 테두리에 걸치되 40%만 탁자 안으로, 탁자는 좌석 줄 끝(+ 간격)까지 늘린다 (좌석 도면 표현)
+  const desks = seats.filter(a => a.desk && !a.filled), deskSz = desks.map(a => Math.max(a.x1 - a.x0, a.y1 - a.y0)).sort((a, b) => a - b);
   if (deskSz.length >= 3) {
-    const sz = deskSz[deskSz.length >> 1];
-    for (const a of seats) if (a.tbl) {
-      const { c, k, i, horiz } = a.tbl, start = (horiz ? c.x0 : c.y0) + i * sz;
-      const edge = k === 0 ? c.y0 : k === 1 ? c.y1 + 1 : k === 2 ? c.x0 : c.x1 + 1, b0 = edge - sz / 2;
-      Object.assign(a, horiz ? { x0: start, y0: b0, x1: start + sz, y1: b0 + sz } : { x0: b0, y0: start, x1: b0 + sz, y1: start + sz });
+    const sz = deskSz[deskSz.length >> 1], gaps = [];
+    for (const a of desks) for (const b of desks) { // 줄지어 붙은 책상 좌석 사이 간격
+      if (a === b) continue;
+      const ax = (a.x0 + a.x1) / 2, ay = (a.y0 + a.y1) / 2, bx = (b.x0 + b.x1) / 2, by = (b.y0 + b.y1) / 2;
+      const d = Math.abs(ay - by) < sz * 0.25 ? Math.abs(ax - bx) : Math.abs(ax - bx) < sz * 0.25 ? Math.abs(ay - by) : Infinity;
+      if (d < sz * 1.5 && d - sz >= 0 && d - sz <= sz * 0.4) gaps.push(d - sz);
+    }
+    gaps.sort((a, b) => a - b);
+    const gap = gaps.length ? gaps[gaps.length >> 1] : sz * 0.09, pitch = sz + gap, ovl = sz * 0.4;
+    const wallAt = (x, y) => { x = Math.round(x); y = Math.round(y); return x >= 0 && y >= 0 && x < W && y < H && WM[y * W + x]; };
+    for (const tb of new Set(seats.filter(a => a.tbl).map(a => a.tbl.tb))) {
+      const row = seats.filter(a => a.tbl && a.tbl.tb === tb), horiz = row[0].tbl.horiz, n = row[0].tbl.n;
+      const lo = horiz ? tb.x0 : tb.y0, hi = horiz ? tb.x1 : tb.y1, mid = horiz ? (tb.y0 + tb.y1) / 2 : (tb.x0 + tb.x1) / 2, len = n * pitch - gap;
+      const near = v => [3, 6, 10].some(o => horiz ? wallAt(v, mid) || wallAt(v - o, mid) || wallAt(v + o, mid) : wallAt(mid, v) || wallAt(mid, v - o) || wallAt(mid, v + o));
+      const start = near(lo) ? lo + gap : near(hi) ? hi - gap - len : (lo + hi) / 2 - len / 2; // 벽에서 좌석 간격만큼 띄우고
+      for (const a of row) {
+        const { k, i } = a.tbl, s0 = start + i * pitch;
+        const b0 = k === 0 ? tb.y0 + ovl - sz : k === 1 ? tb.y1 - ovl : k === 2 ? tb.x0 + ovl - sz : tb.x1 - ovl;
+        Object.assign(a, horiz ? { x0: s0, y0: b0, x1: s0 + sz, y1: b0 + sz } : { x0: b0, y0: s0, x1: b0 + sz, y1: s0 + sz });
+      }
+      const e0 = Math.min(lo, start), e1 = Math.max(hi, start + len + (near(lo) ? gap : 0));
+      if (horiz) { tb.x0 = e0; tb.x1 = e1; } else { tb.y0 = e0; tb.y1 = e1; }
     }
   }
   // 칠한 좌석 상자 (디자인 도면): 벽 색이 아닌 중간 회색으로 꽉 칠한 0.45~1.2m 네모
@@ -855,6 +874,12 @@ function detectSeats(P, SC, bars, doors, pxPerM) {
   const onWallFrac = r => { let hit = 0, tot = 0; for (let y = Math.round(r.y0); y < r.y1; y += 2) for (let x = Math.round(r.x0); x < r.x1; x += 2) { tot++; if (x >= 0 && y >= 0 && x < W && y < H && WM[y * W + x]) hit++; } return tot ? hit / tot : 1; };
   for (let i = seats.length - 1; i >= 0; i--) if (!seats[i].desk && onWallFrac(seats[i]) > 0.15) seats.splice(i, 1); // 책상 칸·칠한 상자는 선으로 둘러싸여 있어 벽에 붙어 있어도 된다
   for (let i = tables.length - 1; i >= 0; i--) if (onWallFrac(tables[i]) > 0.15) tables.splice(i, 1);
+  // 문이 열리는 자리(1/4 원 안)에 중심이 있는 좌석은 문 호·문짝 선을 칸으로 잘못 본 것
+  for (let i = seats.length - 1; i >= 0; i--) {
+    const a = seats[i], cx0 = (a.x0 + a.x1) / 2, cy0 = (a.y0 + a.y1) / 2;
+    if (doors.some(d => { const vx = cx0 - d.p[0], vy = cy0 - d.p[1];
+      return Math.hypot(vx, vy) <= d.r * 1.05 && vx * d.u[0] + vy * d.u[1] >= -d.r * 0.1 && vx * d.n[0] + vy * d.n[1] >= -d.r * 0.1; })) seats.splice(i, 1);
+  }
   // 다른 좌석보다 훨씬 작은 칸(중앙값의 60% 미만)은 선반·수납 칸
   if (seats.length >= 4) {
     const sz = seats.map(a => Math.max(a.x1 - a.x0, a.y1 - a.y0)).sort((a, b) => a - b), med = sz[sz.length >> 1];
@@ -977,7 +1002,12 @@ function traceToPlan(w, P, widthM = 0) {
   // 잇는 거리: 같은 줄 틈은 문 폭(1.3m)까지, 모자란 끝은 0.4m 까지 (축척 모르면 가로 15m 가정). 끝 늘리기를 길게 하면 책상 칸막이까지 이어져 버린다
   let fx0 = W, fx1 = 0;
   for (let i = 0; i < W * H; i++) if (SC.F2[i]) { const x = i % W; if (x < fx0) fx0 = x; if (x > fx1) fx1 = x; }
-  const knownW = +widthM > 0 ? +widthM : 15, pxPerM = fx1 > fx0 ? (fx1 - fx0 + 1) / knownW : S / 15;
+  // 축척(1m 당 px): 입력한 가로 길이 > 문 폭으로 추정 (문 열림 호 반지름 중앙값 = 1m) > 가로 15m 가정
+  let pxPerM = fx1 > fx0 ? (fx1 - fx0 + 1) / (+widthM > 0 ? +widthM : 15) : S / 15, scaleFrom = +widthM > 0 ? 'input' : 'guess';
+  if (!(+widthM > 0)) {
+    const pre = detectDoors(bars.concat(SC.extSegs), P.light, W, H, 0, wallRaster(SC.ring, bars, W, H)).map(d => d.r).sort((a, b) => a - b);
+    if (pre.length >= 2) { pxPerM = pre[pre.length >> 1] / 1.0; scaleFrom = 'doors'; } // 문 폭 약 1m
+  }
   bars = connectWalls(bars, SC.ring, W, H, pxPerM * 1.3, pxPerM * 0.4, P.light);
 
   // 문: 문 열림 호가 그려진 자리 (벽 데이터는 이어진 채로 두고, 그릴 때 문 폭만큼 벽을 비우고 1/4 원을 그린다)
@@ -990,8 +1020,8 @@ function traceToPlan(w, P, widthM = 0) {
   let x0 = W, y0 = H, x1 = 0, y1 = 0;
   for (let i = 0; i < W * H; i++) if (SC.F2[i]) { const x = i % W, y = (i - x) / W; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
   if (x1 <= x0 || y1 <= y0) throw Object.assign(new Error('도면에서 벽을 찾지 못했습니다. 다시 시도하거나 더 선명한 도면을 올려 주세요'), { busy: true });
-  // 축척: 입력한 가로 길이(m), 없으면 가로 15m 가정
-  const realW = +widthM > 0 ? +widthM * 100 : 1500, k = realW / (x1 - x0 + 1);
+  // 축척: 입력한 가로 길이(m), 없으면 위에서 정한 pxPerM (문 폭 추정 또는 가로 15m 가정)
+  const k = +widthM > 0 ? +widthM * 100 / (x1 - x0 + 1) : 100 / pxPerM; // cm / px
   const cx = v => Math.round((v - x0) * k * 10) / 10, cy = v => Math.round((v - y0) * k * 10) / 10;
 
   // 5. 외벽 띠·기둥·사선 벽 → 다각형 (구멍 포함), 내부 벽 막대 → 선 벽
@@ -1012,7 +1042,7 @@ function traceToPlan(w, P, widthM = 0) {
   const rect = r => ({ x: cx(r.x0), y: cy(r.y0), w: Math.round((r.x1 - r.x0) * k), h: Math.round((r.y1 - r.y0) * k) });
   const seats = seatInfo.seats.map(r => ({ ...rect(r), label: r.label, zone: r.zone })), tables = seatInfo.tables.map(rect); // zone: 구역(방) 번호
   return finalize({ width: Math.round((x1 - x0 + 1) * k), height: Math.round((y1 - y0 + 1) * k), wallThickness: 15, walls, shapes,
-    doors: doorOut, seats, tables, src: { x0, y0, k } }); // src: 원본 이미지 px ↔ cm 변환 (px = cm / k + x0), 채점·겹쳐 보기용
+    doors: doorOut, seats, tables, scaleFrom, src: { x0, y0, k } }); // scaleFrom: 축척 근거 (input | doors | guess) // src: 원본 이미지 px ↔ cm 변환 (px = cm / k + x0), 채점·겹쳐 보기용
 }
 
 // 형식·범위 정리
@@ -1024,7 +1054,7 @@ function finalize(p) {
   const shapes = (p.shapes || []).map(sh => sh.map(l => l.map(([x, y]) => [cx(x), cy(y)])));
   const doors = (p.doors || []).filter(d => [d.x, d.y, d.r].every(Number.isFinite));
   const box = r => [r.x, r.y, r.w, r.h].every(Number.isFinite) && r.w > 0 && r.h > 0;
-  return { width: W, height: H, wallThickness: p.wallThickness, walls, shapes, doors, seats: (p.seats || []).filter(box), tables: (p.tables || []).filter(box), ...(p.src ? { src: p.src } : {}) };
+  return { width: W, height: H, wallThickness: p.wallThickness, walls, shapes, doors, seats: (p.seats || []).filter(box), tables: (p.tables || []).filter(box), ...(p.scaleFrom ? { scaleFrom: p.scaleFrom } : {}), ...(p.src ? { src: p.src } : {}) };
 }
 
 // 거의 수평·수직인(4° 이내) 벽 선분을 똑바로 편다
