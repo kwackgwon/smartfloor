@@ -50,10 +50,11 @@ function draw(scale = s * (devicePixelRatio || 1), ratio = devicePixelRatio || 1
     g.moveTo(d.x - nx * h, d.y - ny * h); g.lineTo(d.x + ux * d.r - nx * h, d.y + uy * d.r - ny * h);
     g.lineTo(d.x + ux * d.r + nx * h, d.y + uy * d.r + ny * h); g.lineTo(d.x + nx * h, d.y + ny * h); g.closePath(); g.fill(); g.restore();
     const a0 = Math.atan2(uy, ux), a1 = Math.atan2(ny, nx), ccw = ((a1 - a0 + 3 * Math.PI) % (2 * Math.PI)) - Math.PI < 0;
-    g.fillStyle = DOOR; g.beginPath(); g.moveTo(d.x, d.y); g.arc(d.x, d.y, d.r, a0, a1, ccw); g.closePath(); g.fill();
-    const b = (d.t || plan.wallThickness) / 2; // 경첩 뒤쪽 벽 반 두께도 흰색으로 (문이 벽 두께 전체를 채우게)
-    g.beginPath(); g.moveTo(d.x - nx * b, d.y - ny * b); g.lineTo(d.x + ux * d.r - nx * b, d.y + uy * d.r - ny * b);
-    g.lineTo(d.x + ux * d.r, d.y + uy * d.r); g.lineTo(d.x, d.y); g.closePath(); g.fill();
+    // 흰 문: 경첩 뒤쪽 벽 반 두께(띠) + 1/4 원을 한 경로로 칠한다 (따로 칠하면 경계에 옅은 선이 남는다)
+    const b = (d.t || plan.wallThickness) / 2;
+    g.fillStyle = DOOR; g.beginPath();
+    g.moveTo(d.x - nx * b, d.y - ny * b); g.lineTo(d.x + ux * d.r - nx * b, d.y + uy * d.r - ny * b);
+    g.lineTo(d.x + ux * d.r, d.y + uy * d.r); g.arc(d.x, d.y, d.r, a0, a1, ccw); g.lineTo(d.x, d.y); g.closePath(); g.fill();
   }
   // 탁자(연한 회색)·좌석(회색 네모 + 흰 번호)
   g.fillStyle = WALL; for (const t of plan.tables || []) g.fillRect(t.x, t.y, t.w, t.h);
@@ -118,8 +119,10 @@ async function generate() {
     const p = traceToPlan(autoExtent(px), px, widthM());
     remember(); show(p); save(); // 이전 도면·편집은 되돌리기로 되살릴 수 있다
     const scale = p.scaleFrom === 'doors' ? ' · 크기는 문 폭으로 추정했어요 (가로 길이를 넣으면 정확해져요)' : p.scaleFrom === 'guess' ? ' · 가로 길이를 넣으면 실제 크기가 정확해져요' : '';
-    say(`도면 생성 완료 · ${((Date.now() - t0) / 1000).toFixed(1)}초${scale}${p.seats.length ? ' · 좌석 글자는 🔤 구역 이름으로 바꿔요' : ''}`);
-    if (innerWidth < 800) cvs.scrollIntoView({ behavior: 'smooth', block: 'start' }); // 휴대폰: 결과로 이동
+    const narrow = innerWidth < 800, secs = ((Date.now() - t0) / 1000).toFixed(1);
+    say(narrow ? `생성 완료 · ${secs}초${p.seats.length ? ' · 🔤로 구역 글자 바꾸기' : ''}` // 휴대폰: 짧게
+      : `도면 생성 완료 · ${secs}초${scale}${p.seats.length ? ' · 좌석 글자는 🔤 구역 이름으로 바꿔요' : ''}`);
+    if (narrow) document.querySelector('.view').scrollIntoView({ behavior: 'smooth', block: 'start' }); // 휴대폰: 결과로 이동 (편집 버튼이 보이게 툴바부터)
   } catch (err) {
     $('loading').hidden = true;
     if (plan) cvs.hidden = false; else $('empty').hidden = false;

@@ -88,6 +88,7 @@ canvas { max-width: 100%; border-radius: 8px; background: repeating-conic-gradie
   .stage { min-height: 360px; }
 }
 @media (max-width: 520px) {
+  .chip { white-space: normal; border-radius: 12px; line-height: 1.4; } /* 휴대폰: 안내가 잘리지 않게 줄바꿈 */
   .grp button { padding: 7px 10px; font-size: 13px; }
   .hint .kbd { display: none; } /* 휴대폰: Shift 안내 숨김 */
 }
